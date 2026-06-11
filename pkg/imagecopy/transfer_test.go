@@ -12,6 +12,7 @@ package imagecopy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -384,6 +385,206 @@ func TestBlobEnumeration_ExcludesPartFiles(t *testing.T) {
 			sortedKeys(out),
 		)
 	}
+}
+
+// TestPullOneBlob_VerifyReused_Correct tests that a right-sized correct local
+// blob is reused without re-downloading regardless of verifyReused value.
+func TestPullOneBlob_VerifyReused_Correct(t *testing.T) {
+	t.Parallel()
+
+	for _, verifyReused := range []bool{false, true} {
+		t.Run(fmt.Sprintf("verifyReused=%v", verifyReused), func(t *testing.T) {
+			t.Parallel()
+
+			localBase := t.TempDir()
+			remoteBase := t.TempDir()
+			localFS, err := NewOsFs(localBase)
+			if err != nil {
+				t.Fatal(err)
+			}
+			remoteFS, err := NewOsFs(remoteBase)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Seed the remote with the full L1 blob.
+			remoteShareSha := filepath.Join(remoteBase, "share", "sha256")
+			must(t, os.MkdirAll(remoteShareSha, 0o755))
+			must(t, os.WriteFile(
+				filepath.Join(remoteShareSha, realLayer1Hex),
+				[]byte(realLayer1Content),
+				0o644,
+			))
+
+			// Seed the local side with the CORRECT full blob.
+			localShareSha := filepath.Join(localBase, "share", "sha256")
+			must(t, os.MkdirAll(localShareSha, 0o755))
+			must(t, os.WriteFile(
+				filepath.Join(localShareSha, realLayer1Hex),
+				[]byte(realLayer1Content),
+				0o644,
+			))
+
+			remoteDirs := NewFsOciDirs(remoteFS, 1)
+			localDirs := NewFsOciDirs(localFS, 1)
+
+			dgst := digest.Digest("sha256:" + realLayer1Hex)
+			bt := blobTransfer{Digest: dgst, Size: int64(len(realLayer1Content))}
+
+			ctx := context.Background()
+			sent, err := pullOneBlob(ctx, bt, remoteDirs, localFS, localDirs, verifyReused)
+			if err != nil {
+				t.Fatalf("pullOneBlob: %v", err)
+			}
+			if sent {
+				t.Errorf(
+					"verifyReused=%v: expected blob to be reused (sent=false), got sent=true",
+					verifyReused,
+				)
+			}
+
+			// Verify the local blob still contains the correct content.
+			got, err := os.ReadFile(filepath.Join(localShareSha, realLayer1Hex))
+			if err != nil {
+				t.Fatalf("read final: %v", err)
+			}
+			if string(got) != realLayer1Content {
+				t.Errorf("final content = %q, want %q", got, realLayer1Content)
+			}
+		})
+	}
+}
+
+// TestPullOneBlob_VerifyReused_Corrupt tests that a right-sized corrupt local
+// blob is:
+//   - reused as-is when verifyReused=false (wrong bytes persist)
+//   - re-downloaded and corrected when verifyReused=true
+func TestPullOneBlob_VerifyReused_Corrupt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("verifyReused=false_reuses_corrupt", func(t *testing.T) {
+		t.Parallel()
+
+		localBase := t.TempDir()
+		remoteBase := t.TempDir()
+		localFS, err := NewOsFs(localBase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		remoteFS, err := NewOsFs(remoteBase)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Seed the remote with correct bytes.
+		remoteShareSha := filepath.Join(remoteBase, "share", "sha256")
+		must(t, os.MkdirAll(remoteShareSha, 0o755))
+		must(t, os.WriteFile(
+			filepath.Join(remoteShareSha, realLayer1Hex),
+			[]byte(realLayer1Content),
+			0o644,
+		))
+
+		// Seed the local side with CORRUPT bytes at the right size.
+		localShareSha := filepath.Join(localBase, "share", "sha256")
+		must(t, os.MkdirAll(localShareSha, 0o755))
+		corruptContent := make([]byte, len(realLayer1Content))
+		for i := range corruptContent {
+			corruptContent[i] = byte(0xFF ^ realLayer1Content[i])
+		}
+		must(t, os.WriteFile(
+			filepath.Join(localShareSha, realLayer1Hex),
+			corruptContent,
+			0o644,
+		))
+
+		remoteDirs := NewFsOciDirs(remoteFS, 1)
+		localDirs := NewFsOciDirs(localFS, 1)
+
+		dgst := digest.Digest("sha256:" + realLayer1Hex)
+		bt := blobTransfer{Digest: dgst, Size: int64(len(realLayer1Content))}
+
+		ctx := context.Background()
+		sent, err := pullOneBlob(ctx, bt, remoteDirs, localFS, localDirs, false)
+		if err != nil {
+			t.Fatalf("pullOneBlob (verifyReused=false): %v", err)
+		}
+		if sent {
+			t.Error("verifyReused=false: expected blob to be reused (sent=false)")
+		}
+
+		// Wrong bytes should still be there since we didn't verify.
+		got, err := os.ReadFile(filepath.Join(localShareSha, realLayer1Hex))
+		if err != nil {
+			t.Fatalf("read final: %v", err)
+		}
+		if string(got) == realLayer1Content {
+			t.Error(
+				"verifyReused=false: expected corrupt bytes to persist, but got correct content",
+			)
+		}
+	})
+
+	t.Run("verifyReused=true_redownloads", func(t *testing.T) {
+		t.Parallel()
+
+		localBase := t.TempDir()
+		remoteBase := t.TempDir()
+		localFS, err := NewOsFs(localBase)
+		if err != nil {
+			t.Fatal(err)
+		}
+		remoteFS, err := NewOsFs(remoteBase)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Seed the remote with correct bytes.
+		remoteShareSha := filepath.Join(remoteBase, "share", "sha256")
+		must(t, os.MkdirAll(remoteShareSha, 0o755))
+		must(t, os.WriteFile(
+			filepath.Join(remoteShareSha, realLayer1Hex),
+			[]byte(realLayer1Content),
+			0o644,
+		))
+
+		// Seed the local side with CORRUPT bytes at the right size.
+		localShareSha := filepath.Join(localBase, "share", "sha256")
+		must(t, os.MkdirAll(localShareSha, 0o755))
+		corruptContent := make([]byte, len(realLayer1Content))
+		for i := range corruptContent {
+			corruptContent[i] = byte(0xFF ^ realLayer1Content[i])
+		}
+		must(t, os.WriteFile(
+			filepath.Join(localShareSha, realLayer1Hex),
+			corruptContent,
+			0o644,
+		))
+
+		remoteDirs := NewFsOciDirs(remoteFS, 1)
+		localDirs := NewFsOciDirs(localFS, 1)
+
+		dgst := digest.Digest("sha256:" + realLayer1Hex)
+		bt := blobTransfer{Digest: dgst, Size: int64(len(realLayer1Content))}
+
+		ctx := context.Background()
+		sent, err := pullOneBlob(ctx, bt, remoteDirs, localFS, localDirs, true)
+		if err != nil {
+			t.Fatalf("pullOneBlob (verifyReused=true): %v", err)
+		}
+		if !sent {
+			t.Error("verifyReused=true: expected corrupt blob to be re-downloaded (sent=true)")
+		}
+
+		// Correct bytes should now be present.
+		got, err := os.ReadFile(filepath.Join(localShareSha, realLayer1Hex))
+		if err != nil {
+			t.Fatalf("read final: %v", err)
+		}
+		if string(got) != realLayer1Content {
+			t.Errorf("verifyReused=true: final content = %q, want %q", got, realLayer1Content)
+		}
+	})
 }
 
 // TestBlobEnumeration_OCI_ExcludesPartFiles verifies that the OCI transport

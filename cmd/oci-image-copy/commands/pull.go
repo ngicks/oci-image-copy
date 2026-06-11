@@ -2,8 +2,8 @@ package commands
 
 import (
 	"fmt"
+	"os"
 
-	"github.com/ngicks/oci-image-copy/pkg/cli/skopeo"
 	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
 	"github.com/spf13/cobra"
 )
@@ -16,14 +16,17 @@ var pullCmd = &cobra.Command{
 }
 
 var pullFlags struct {
-	localTransport  string
-	localPath       string
-	remoteTransport string
-	remotePath      string
-	localDumpDir    string
-	dryRun          bool
-	assumeLocalHas  []string
-	keepGoing       bool
+	local        string
+	remote       string
+	localDumpDir string
+	dryRun       bool
+	// Companion flags for the file-server remote.
+	remoteHeaders      []string
+	remoteChunkSize    string
+	remoteNamingPrefix string
+	assumeLocalHas     []string
+	keepGoing          bool
+	verifyReusedBlobs  bool
 }
 
 func init() {
@@ -31,34 +34,41 @@ func init() {
 
 	f := pullCmd.Flags()
 	f.StringVar(
-		&pullFlags.localTransport,
-		"local-transport",
-		"containers-storage",
-		"containers-storage|docker-daemon|oci",
+		&pullFlags.local,
+		"local",
+		"containers-storage:",
+		"local transport spec: containers-storage:|docker-daemon:|oci:/path "+
+			"(docker: not supported for pull — cannot be loaded into)",
 	)
 	f.StringVar(
-		&pullFlags.localPath,
-		"local-path",
+		&pullFlags.remote,
+		"remote",
 		"",
-		"local oci: dir (only when --local-transport=oci)",
-	)
-	bindRemoteTargetFlags(f)
-	f.StringVar(
-		&pullFlags.remoteTransport,
-		"remote-transport",
-		"containers-storage",
-		"containers-storage|docker-daemon|oci",
-	)
-	f.StringVar(
-		&pullFlags.remotePath,
-		"remote-path",
-		"",
-		"remote oci: dir (only when --remote-transport=oci)",
+		"remote spec: ssh://[user@]host[:port][/<transport>], "+
+			"file-server:<url>, or oci:/path",
 	)
 	f.StringVar(&pullFlags.localDumpDir, "local-dumpdir", "",
 		"base of the local on-disk store layout; "+
 			"when empty, falls back to ${XDG_DATA_HOME:-$HOME/.local/share}/oci-image-copy")
 	f.BoolVar(&pullFlags.dryRun, "dry-run", false, "no mutation; emit a plan instead")
+	f.StringArrayVar(
+		&pullFlags.remoteHeaders,
+		"remote-header",
+		nil,
+		"extra request header for file-server remote (repeatable, e.g. 'Authorization: Bearer tok')",
+	)
+	f.StringVar(
+		&pullFlags.remoteChunkSize,
+		"remote-chunk-size",
+		"",
+		"file-server chunk size (human-readable, e.g. 100MiB; default 100MiB)",
+	)
+	f.StringVar(
+		&pullFlags.remoteNamingPrefix,
+		"remote-naming-prefix",
+		"",
+		"file-server naming convention prefix (default \"\")",
+	)
 	f.StringSliceVar(
 		&pullFlags.assumeLocalHas,
 		"assume-local-has",
@@ -66,39 +76,45 @@ func init() {
 		"raw blob digests local already has (skips enumeration)",
 	)
 	f.BoolVar(&pullFlags.keepGoing, "keep-going", false, "continue on per-image failure")
+	f.BoolVar(&pullFlags.verifyReusedBlobs, "verify-reused-blobs", false,
+		"sha256-verify local blobs that are already at the expected size before reusing; "+
+			"re-downloads corrupt blobs")
 }
 
 func runPull(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	if err := validateTransport("--local-transport", pullFlags.localTransport); err != nil {
+	if pullFlags.remote == "" {
+		return fmt.Errorf("--remote is required")
+	}
+
+	// Validate --local spec: pull cannot use docker: transport (not enumerable).
+	ls, err := imagecopy.ParseLocalSpec(pullFlags.local)
+	if err != nil {
 		return err
 	}
-	if err := validateTransport("--remote-transport", pullFlags.remoteTransport); err != nil {
+	if err := validateEnumerableLocal("--local", ls); err != nil {
 		return err
 	}
 
-	share, err := initShare(ctx,
-		imagecopy.LocalConfig{
-			BaseDir:   pullFlags.localDumpDir,
-			Transport: skopeo.Transport(pullFlags.localTransport),
-			OCIPath:   pullFlags.localPath,
-		},
-		imagecopy.RemoteConfig{
-			Transport: skopeo.Transport(pullFlags.remoteTransport),
-			OCIPath:   pullFlags.remotePath,
-		},
-	)
+	share, err := initShare(ctx, pullFlags.local, pullFlags.remote, pullFlags.localDumpDir,
+		fileServerOpts{
+			headers:      pullFlags.remoteHeaders,
+			chunkSize:    pullFlags.remoteChunkSize,
+			namingPrefix: pullFlags.remoteNamingPrefix,
+			authFromEnv:  os.Getenv(FileServerAuthEnvVar),
+		})
 	if err != nil {
 		return err
 	}
 	defer share.Close()
 
 	res, err := share.Pull(ctx, imagecopy.PullArgs{
-		Images:         args,
-		DryRun:         pullFlags.dryRun,
-		AssumeLocalHas: pullFlags.assumeLocalHas,
-		KeepGoing:      pullFlags.keepGoing,
+		Images:            args,
+		DryRun:            pullFlags.dryRun,
+		AssumeLocalHas:    pullFlags.assumeLocalHas,
+		KeepGoing:         pullFlags.keepGoing,
+		VerifyReusedBlobs: pullFlags.verifyReusedBlobs,
 	})
 	for _, r := range res.Reports {
 		fmt.Fprintln(cmd.OutOrStdout(), r.SummaryLine())

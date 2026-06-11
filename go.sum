@@ -9,6 +9,8 @@ github.com/ngicks/go-common/contextkey v0.2.0 h1:s4a5sncW4OWJmxitKuGNQiyx6TBAJuy
 github.com/ngicks/go-common/contextkey v0.2.0/go.mod h1:Y22ZMNUDCCCBvNxaPpk2VTsJHowYcOtLSEUzeMaFCDM=
 github.com/ngicks/go-fsys-helper/fsutil v0.0.0-20260611004045-dbea04231ffd h1:HXdRvd6nfTWi3oGpQKlMDEi/cxdoLVw+eG2W1FsN1pM=
 github.com/ngicks/go-fsys-helper/fsutil v0.0.0-20260611004045-dbea04231ffd/go.mod h1:3Ko4N72NP33xyl3yIEj3JzbOAA8Ko/ZxgmbAl7uZhf4=
+github.com/ngicks/go-fsys-helper/stream v0.2.2-0.20260611190045-151cd32d2e1e h1:h7dn0pXY8PcwgS7BSYLKanKWQRD7BemXR4nFNHYRmWM=
+github.com/ngicks/go-fsys-helper/stream v0.2.2-0.20260611190045-151cd32d2e1e/go.mod h1:+7p+ekRp4CjEkl6VWa9IjzOxNgvMmdsoj5IszCjVBUg=
 github.com/ngicks/go-fsys-helper/vroot v0.0.0-20260611004045-dbea04231ffd h1:JMH9XmgghZwElgnoXaXSgggn5l0pWQa4TZ+Xwl9ZzQ0=
 github.com/ngicks/go-fsys-helper/vroot v0.0.0-20260611004045-dbea04231ffd/go.mod h1:OfdXCVHGt6i9a1ukb9Fg9+D0FACO4HLKuOqfdgb1XpA=
 github.com/ngicks/go-fsys-helper/vroot-adapter/sftpfs v0.0.0-20260611004045-dbea04231ffd h1:+uT9ZHfJF7BWk6zRKVjUDHE/F/u7yHAVzdC1464N8aQ=

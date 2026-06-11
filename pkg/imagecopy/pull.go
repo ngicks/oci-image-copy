@@ -33,6 +33,13 @@ type PullArgs struct {
 	AssumeLocalHasSet map[string]struct{}
 
 	KeepGoing bool
+
+	// VerifyReusedBlobs controls whether blobs that are already present
+	// locally at the expected size are sha256-verified before being
+	// reused. When true, a corrupt (right-size but wrong-content) local
+	// blob is detected and re-downloaded. When false (default), existing
+	// right-sized blobs are reused without verification.
+	VerifyReusedBlobs bool
 }
 
 // PullImageReport is the per-image summary line for pulls.
@@ -246,15 +253,15 @@ func pullOne(
 		return rep
 	}
 
-	// 1. Mirror tag-dir metadata files from peer to local
-	if err := mirrorTagFilesFromPeer(ctx, peer.Dir(), ref, local.Dir()); err != nil {
-		rep.Err = fmt.Errorf("tag-dir sync: %w", err)
-		return rep
-	}
-
-	// 2. Stream missing blobs from peer to local via fsutil Pull primitives
+	// 1. Stream missing blobs from peer to local via fsutil Pull primitives.
+	// Blobs are fetched BEFORE tag-dir metadata (commit-last semantics):
+	// the local tag dir references only blobs that are already fully present,
+	// which improves crash consistency for all transport backends.
 	blobs := toBlobTransfers(digestsSorted, sizes)
-	res, err := pullBlobs(ctx, blobs, peer.Dir(), local.fs, local.Dir(), DefaultLocalParallelism)
+	res, err := pullBlobs(
+		ctx, blobs, peer.Dir(), local.fs, local.Dir(),
+		DefaultLocalParallelism, args.VerifyReusedBlobs,
+	)
 	if err != nil {
 		rep.Err = fmt.Errorf("put blobs: %w", err)
 		return rep
@@ -264,6 +271,13 @@ func pullOne(
 	// always-pinned manifest/config on a repeat pull) count as reused too.
 	rep.Reused += res.Reused
 	rep.BytesFetched = res.BytesSent
+
+	// 2. Mirror tag-dir metadata files from peer to local (commit step).
+	// Written after all blobs so the local tag dir only references present blobs.
+	if err := mirrorTagFilesFromPeer(ctx, peer.Dir(), ref, local.Dir()); err != nil {
+		rep.Err = fmt.Errorf("tag-dir sync: %w", err)
+		return rep
+	}
 
 	// 3. Load image into local live storage
 	if err := local.LoadImage(ctx, ref); err != nil {
@@ -275,9 +289,9 @@ func pullOne(
 
 // mirrorTagFilesFromPeer reads index.json + oci-layout from peer's
 // tag dir and writes them to local's tag dir via [OciDirs.PutTagFile].
-// Both files are small so reading via [ocidir.DirV1.Blob]-like access
-// isn't appropriate; we read the JSON via the typed accessors and
-// re-marshal.
+// When the source DirV1 implements [ocidir.RawAccessor], the verbatim raw bytes
+// are used directly to preserve byte-true digest math. Otherwise the typed
+// accessors are used and the result is re-marshalled (fallback path).
 func mirrorTagFilesFromPeer(
 	ctx context.Context,
 	src OciDirs,
@@ -285,21 +299,36 @@ func mirrorTagFilesFromPeer(
 	dst OciDirs,
 ) error {
 	srcDir := src.Image(ref)
-	idx, err := srcDir.Index()
-	if err != nil {
-		return fmt.Errorf("read peer index.json: %w", err)
-	}
-	layout, err := srcDir.ImageLayout()
-	if err != nil {
-		return fmt.Errorf("read peer oci-layout: %w", err)
-	}
-	idxBytes, err := json.MarshalIndent(idx, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal index.json: %w", err)
-	}
-	layoutBytes, err := json.Marshal(layout)
-	if err != nil {
-		return fmt.Errorf("marshal oci-layout: %w", err)
+
+	var idxBytes, layoutBytes []byte
+	if raw, ok := srcDir.(ocidir.RawAccessor); ok {
+		var err error
+		idxBytes, err = raw.RawIndex()
+		if err != nil {
+			return fmt.Errorf("read peer index.json (raw): %w", err)
+		}
+		layoutBytes, err = raw.RawImageLayout()
+		if err != nil {
+			return fmt.Errorf("read peer oci-layout (raw): %w", err)
+		}
+	} else {
+		idx, err := srcDir.Index()
+		if err != nil {
+			return fmt.Errorf("read peer index.json: %w", err)
+		}
+		layout, err := srcDir.ImageLayout()
+		if err != nil {
+			return fmt.Errorf("read peer oci-layout: %w", err)
+		}
+		var marshalErr error
+		idxBytes, marshalErr = json.MarshalIndent(idx, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("marshal index.json: %w", marshalErr)
+		}
+		layoutBytes, marshalErr = json.Marshal(layout)
+		if marshalErr != nil {
+			return fmt.Errorf("marshal oci-layout: %w", marshalErr)
+		}
 	}
 	if err := dst.PutTagFile(ctx, ref, "oci-layout", layoutBytes); err != nil {
 		return fmt.Errorf("put oci-layout: %w", err)

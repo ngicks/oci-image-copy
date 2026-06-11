@@ -3,7 +3,6 @@ package commands
 import (
 	"fmt"
 
-	"github.com/ngicks/oci-image-copy/pkg/cli/skopeo"
 	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
 	"github.com/spf13/cobra"
@@ -17,9 +16,8 @@ var dumpCmd = &cobra.Command{
 }
 
 var dumpFlags struct {
-	localTransport string
-	localPath      string
-	localDumpDir   string
+	local        string
+	localDumpDir string
 }
 
 func init() {
@@ -27,16 +25,10 @@ func init() {
 
 	f := dumpCmd.Flags()
 	f.StringVar(
-		&dumpFlags.localTransport,
-		"local-transport",
-		"containers-storage",
-		"containers-storage|docker-daemon|oci|docker",
-	)
-	f.StringVar(
-		&dumpFlags.localPath,
-		"local-path",
-		"",
-		"local oci: dir (only when --local-transport=oci)",
+		&dumpFlags.local,
+		"local",
+		"containers-storage:",
+		"local transport spec: containers-storage:|docker-daemon:|oci:/path|docker:",
 	)
 	f.StringVar(&dumpFlags.localDumpDir, "local-dumpdir", "",
 		"base of the local on-disk store layout; "+
@@ -46,14 +38,18 @@ func init() {
 func runDump(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	if err := validateSourceTransport("--local-transport", dumpFlags.localTransport); err != nil {
+	ls, err := imagecopy.ParseLocalSpec(dumpFlags.local)
+	if err != nil {
+		return err
+	}
+	if err := validateSourceLocal("--local", ls); err != nil {
 		return err
 	}
 
 	local, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
 		BaseDir:   dumpFlags.localDumpDir,
-		Transport: skopeo.Transport(dumpFlags.localTransport),
-		OCIPath:   dumpFlags.localPath,
+		Transport: ls.Transport,
+		OCIPath:   ls.Path,
 	})
 	if err != nil {
 		return err

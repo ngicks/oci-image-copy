@@ -83,7 +83,7 @@ state.
 | Side   | Required                                                                        |
 | ------ | ------------------------------------------------------------------------------- |
 | Local  | `skopeo` v1.16+; `podman` if using `containers-storage`, `docker` for `docker-daemon` |
-| Remote | `skopeo` v1.16+; same container runtime as `--remote-transport`; `sshd` with SFTP subsystem enabled |
+| Remote | `skopeo` v1.16+; same container runtime as the `--remote` transport spec; `sshd` with SFTP subsystem enabled (SSH remotes only) |
 | SSH    | OpenSSH client on local; `sshd` on remote with the `sftp` subsystem (e.g. `Subsystem sftp /usr/lib/openssh/sftp-server` in `sshd_config`) |
 
 The minimum `skopeo` version must support `--shared-blob-dir` /
@@ -92,63 +92,128 @@ The minimum `skopeo` version must support `--shared-blob-dir` /
 
 The peer's data dir defaults to
 `${XDG_DATA_HOME:-$HOME/.local/share}/oci-image-copy/` (resolved on the
-remote via SSH). Override with `--remote-transport=oci --remote-path=<dir>`.
+remote via SSH). Override with `--remote oci:/path/to/dir` for a pure OCI
+directory remote, or `--remote ssh://host/oci:/srv/oci` to set a custom
+remote path over SSH.
 
 ## CLI reference
+
+### `--local <spec>` (push / pull / dump)
+
+Specifies the local transport. Accepted forms:
+
+| Spec | Transport | Notes |
+| ---- | --------- | ----- |
+| `containers-storage:` | containers-storage | Default. Bare name (`containers-storage`) also accepted. |
+| `docker-daemon:` | docker-daemon | Bare name (`docker-daemon`) also accepted. |
+| `oci:/path/to/dir` | oci (OCI layout dir) | Path is required. |
+| `docker:` | docker (registry) | Push/dump source only; rejected for pull. Bare name (`docker`) also accepted. |
+
+### `--remote <spec>` (push / pull)
+
+Specifies the remote peer. Accepted forms:
+
+| Spec | Kind | Notes |
+| ---- | ---- | ----- |
+| `ssh://[user@]host[:port][/<transport-spec>]` | SSH remote | `<transport-spec>` is `containers-storage:`, `docker-daemon:`, or `oci:/path`. Defaults to `containers-storage:`. |
+| `file-server:<url>` | File-server remote | Fully implemented. Push/pull via chunked HTTP objects + per-image meta. `ListImages` is unsupported (no global index on the server). |
+| `oci:/path/to/base/dir` | Local-directory remote | OCI store at a local path; no SSH. Useful for pre-staged directories. |
+
+**SSH remote examples:**
+
+```sh
+# Default transport on remote (containers-storage):
+--remote ssh://myhost
+
+# Custom SSH user and port, oci: transport on remote:
+--remote ssh://alice@myhost:2222/oci:/srv/oci-store
+
+# docker-daemon: transport on remote:
+--remote ssh://myhost/docker-daemon:
+```
+
+**Local-directory remote example** (no SSH, no daemon required):
+
+```sh
+--remote oci:/mnt/nfs/oci-pool
+```
 
 ### Common flags (push / pull)
 
 | Flag | Default | Description |
 | ---- | ------- | ----------- |
-| `--local-transport` | `containers-storage` | Source/destination transport on the local side. One of: `containers-storage`, `docker-daemon`, `oci` — plus `docker` (registry) for `push`/`dump` only, since a registry cannot be enumerated or loaded into. |
-| `--local-path` | | Absolute path for `--local-transport=oci`. |
+| `--local` | `containers-storage:` | Local transport spec (see above). |
+| `--remote` | _(required)_ | Remote peer spec (see above). |
 | `--local-dumpdir` | `~/.local/share/oci-image-copy` | Base of the local on-disk OCI store layout. |
-| `--remote-transport` | `containers-storage` | Transport on the remote side. Same allowed values as `--local-transport`. |
-| `--remote-path` | | Absolute path on the remote for `--remote-transport=oci`. |
-| `--remote-name` | | SSH config destination name (mutually exclusive with `--remote-host/user/port`). |
-| `--remote-host` | | Remote SSH hostname or address. |
-| `--remote-user` | | Remote SSH user (optional). |
-| `--remote-port` | `0` | Remote SSH port (0 = ssh default / config). |
 | `--dry-run` | `false` | No mutation; emit a plan instead. |
 | `--keep-going` | `false` | Continue on per-image failure. |
+
+### File-server companion flags
+
+| Flag / Env var | Default | Description |
+| -------------- | ------- | ----------- |
+| `--remote-header 'Name: value'` | | Extra HTTP request header for file-server remote (repeatable). Values are redacted in logs. |
+| `--remote-chunk-size` | `100MiB` | Upload chunk size (human-readable, e.g. `50MiB`). |
+| `--remote-naming-prefix` | `""` | Naming convention prefix for file-server blobs. |
+| `OCI_IMAGE_COPY_FILESERVER_AUTH` env var | | Sets the `Authorization` header value (e.g. `Bearer <token>`). An explicit `--remote-header 'Authorization: ...'` flag takes precedence. The value is never logged. |
 
 ### `push IMAGE [IMAGE...]`
 
 Push images from the local transport to the remote peer.
 
-Additional flag: `--assume-remote-has <digest,...>` — skip remote enumeration
-when the caller already knows the peer's blob inventory.
+Additional flag: `--assume-remote-has <digest>` (repeatable) — skip remote
+enumeration when the caller already knows the peer's blob inventory.
+
+**Commit-last ordering:** blob data is fully transferred before tag-directory
+metadata (manifests/configs) is written on the remote. This means a partial
+push that is interrupted leaves no dangling references.
 
 ### `pull IMAGE [IMAGE...]`
 
-Pull images from the remote peer into the local transport. Pull is **one-shot**:
-for peers backed by a live container runtime (`containers-storage`,
-`docker-daemon`), the peer first materializes the image from its live storage
-into its own OCI mirror via a remote-side `skopeo copy`. The orchestrator then
-diffs the digest closure and fetches only the missing blobs.
+Pull images from the remote peer into the local transport. Pull is
+**one-shot**: for peers backed by a live container runtime
+(`containers-storage`, `docker-daemon`), the peer first materializes the image
+from its live storage into its own OCI mirror via a remote-side `skopeo copy`.
+The orchestrator then diffs the digest closure and fetches only the missing
+blobs.
 
-For peers configured with `--remote-transport=oci` (a pure OCI mirror), the
-materialization step is a no-op — the mirror already IS the store.
+For peers configured with an `oci:` transport (a pure OCI mirror — either via
+`--remote ssh://host/oci:/path` or `--remote oci:/path`), the materialization
+step is a no-op — the mirror already IS the store.
 
 For read-only peers the materialization step is skipped with a warning; Pull
 proceeds to read the peer's mirror directly. If the image is absent from the
 mirror as well, Pull returns an error.
 
-Additional flag: `--assume-local-has <digest,...>` — skip local enumeration.
+Additional flags:
+
+- `--assume-local-has <digest>` (repeatable) — skip local enumeration.
+- `--verify-reused-blobs` (default `false`) — sha256-verify locally
+  pre-existing blobs before reusing them. By default a local blob file that
+  already exists at the expected size is reused without re-reading it (a
+  standard content-addressed-storage tradeoff: the path encodes the digest,
+  and freshly downloaded data is always verified). Enable this to detect
+  on-disk corruption; a mismatching blob is discarded and re-downloaded.
+
+**Note:** `--local docker:` is rejected for pull (a Docker registry cannot be
+enumerated or loaded into directly).
+
+**Commit-last ordering:** blob data is fully written locally before local
+tag-directory metadata is committed.
 
 ### `dump IMAGE [IMAGE...]`
 
 Dump local images into the on-disk OCI store layout only (no SSH). Useful for
 pre-populating the store before a `push`, or for inspecting the layout.
 
-Flags: `--local-transport`, `--local-path`, `--local-dumpdir`.
+Flags: `--local` (default `containers-storage:`), `--local-dumpdir`.
 
 ## Transport validation
 
-Unsupported `--local-transport` and `--remote-transport` values are rejected
-at CLI startup with a clear error message listing the supported set:
-`containers-storage`, `docker-daemon`, `oci` everywhere, plus `docker`
-(registry) where the local side only acts as a source (`push`, `dump`).
+Unsupported `--local` specs are rejected at CLI startup with a clear error
+message. `docker:` is accepted as a source for `push`/`dump` but rejected for
+`pull`. SSH remote specs that specify `docker:` transport are also rejected.
+Unknown spec prefixes produce an error listing the accepted forms.
 
 ## Known limitations
 
@@ -183,7 +248,8 @@ Each test uses an isolated `ssh_config` (written to a temp dir) via
 | `TestE2E_ResumeFromPartialPush` | Pre-seeded `.part` + `.part.etag` on remote is resumed, not restarted; sidecars removed on success. |
 | `TestE2E_DigestMismatchOnPullResume` | Corrupt `.part` (same size, wrong bytes) on local triggers sha256 hook, cleans up sidecars, fails without committing. |
 | `TestE2E_Pull_DumpImage_OciNoOp` | DumpImage is a no-op for oci-transport peers; pull succeeds and the remote store is not mutated. |
-| `TestCLIBinary_Help` | CLI binary builds and `--help` lists `push`/`pull`/`dump`; invalid transport yields a clear error. |
+| `TestE2E_LocalDirRemote_PushPull` | Push to a local-directory remote (`--remote oci:/path`) then pull from it; no SSH daemon required. |
+| `TestCLIBinary_Help` | CLI binary builds and `--help` lists `push`/`pull`/`dump`; invalid `--local` spec yields a clear error; file-server remote parses the URL and proceeds to the real implementation (no stub error). |
 
 ### Running
 

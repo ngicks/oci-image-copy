@@ -2,8 +2,8 @@ package commands
 
 import (
 	"fmt"
+	"os"
 
-	"github.com/ngicks/oci-image-copy/pkg/cli/skopeo"
 	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
 	"github.com/spf13/cobra"
 )
@@ -16,14 +16,16 @@ var pushCmd = &cobra.Command{
 }
 
 var pushFlags struct {
-	localTransport  string
-	localPath       string
-	remoteTransport string
-	remotePath      string
-	localDumpDir    string
-	dryRun          bool
-	assumeRemoteHas []string
-	keepGoing       bool
+	local        string
+	remote       string
+	localDumpDir string
+	dryRun       bool
+	// Companion flags for the file-server remote.
+	remoteHeaders      []string
+	remoteChunkSize    string
+	remoteNamingPrefix string
+	assumeRemoteHas    []string
+	keepGoing          bool
 }
 
 func init() {
@@ -31,34 +33,40 @@ func init() {
 
 	f := pushCmd.Flags()
 	f.StringVar(
-		&pushFlags.localTransport,
-		"local-transport",
-		"containers-storage",
-		"containers-storage|docker-daemon|oci|docker",
+		&pushFlags.local,
+		"local",
+		"containers-storage:",
+		"local transport spec: containers-storage:|docker-daemon:|oci:/path|docker:",
 	)
 	f.StringVar(
-		&pushFlags.localPath,
-		"local-path",
+		&pushFlags.remote,
+		"remote",
 		"",
-		"local oci: dir (only when --local-transport=oci)",
-	)
-	bindRemoteTargetFlags(f)
-	f.StringVar(
-		&pushFlags.remoteTransport,
-		"remote-transport",
-		"containers-storage",
-		"containers-storage|docker-daemon|oci",
-	)
-	f.StringVar(
-		&pushFlags.remotePath,
-		"remote-path",
-		"",
-		"remote oci: dir (only when --remote-transport=oci)",
+		"remote spec: ssh://[user@]host[:port][/<transport>], "+
+			"file-server:<url>, or oci:/path",
 	)
 	f.StringVar(&pushFlags.localDumpDir, "local-dumpdir", "",
 		"base of the local on-disk store layout; "+
 			"when empty, falls back to ${XDG_DATA_HOME:-$HOME/.local/share}/oci-image-copy")
 	f.BoolVar(&pushFlags.dryRun, "dry-run", false, "no mutation; emit a plan instead")
+	f.StringArrayVar(
+		&pushFlags.remoteHeaders,
+		"remote-header",
+		nil,
+		"extra request header for file-server remote (repeatable, e.g. 'Authorization: Bearer tok')",
+	)
+	f.StringVar(
+		&pushFlags.remoteChunkSize,
+		"remote-chunk-size",
+		"",
+		"file-server chunk size (human-readable, e.g. 100MiB; default 100MiB)",
+	)
+	f.StringVar(
+		&pushFlags.remoteNamingPrefix,
+		"remote-naming-prefix",
+		"",
+		"file-server naming convention prefix (default \"\")",
+	)
 	f.StringSliceVar(
 		&pushFlags.assumeRemoteHas,
 		"assume-remote-has",
@@ -71,24 +79,26 @@ func init() {
 func runPush(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	if err := validateSourceTransport("--local-transport", pushFlags.localTransport); err != nil {
+	if pushFlags.remote == "" {
+		return fmt.Errorf("--remote is required")
+	}
+
+	// Validate --local spec (source-capable transports for push).
+	ls, err := imagecopy.ParseLocalSpec(pushFlags.local)
+	if err != nil {
 		return err
 	}
-	if err := validateTransport("--remote-transport", pushFlags.remoteTransport); err != nil {
+	if err := validateSourceLocal("--local", ls); err != nil {
 		return err
 	}
 
-	share, err := initShare(ctx,
-		imagecopy.LocalConfig{
-			BaseDir:   pushFlags.localDumpDir,
-			Transport: skopeo.Transport(pushFlags.localTransport),
-			OCIPath:   pushFlags.localPath,
-		},
-		imagecopy.RemoteConfig{
-			Transport: skopeo.Transport(pushFlags.remoteTransport),
-			OCIPath:   pushFlags.remotePath,
-		},
-	)
+	share, err := initShare(ctx, pushFlags.local, pushFlags.remote, pushFlags.localDumpDir,
+		fileServerOpts{
+			headers:      pushFlags.remoteHeaders,
+			chunkSize:    pushFlags.remoteChunkSize,
+			namingPrefix: pushFlags.remoteNamingPrefix,
+			authFromEnv:  os.Getenv(FileServerAuthEnvVar),
+		})
 	if err != nil {
 		return err
 	}

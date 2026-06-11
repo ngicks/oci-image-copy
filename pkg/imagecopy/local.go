@@ -82,7 +82,7 @@ type Local struct {
 	skopeoCli SkopeoLike
 	lister    Lister
 	fs        vroot.Fs[vroot.File]
-	dirs      *FsOciDirs
+	dirs      OciDirs
 
 	validateOnce sync.Once
 	validateErr  error

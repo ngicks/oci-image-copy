@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"sort"
 	"sync"
 
@@ -68,6 +69,8 @@ type blobTransfer struct {
 // pullBlobs streams each blob from srcDirs (remote) to localFs / localDirs
 // using the fsutil Pull primitive with sha256 verification.
 // Concurrency is capped to parallelism.
+// verifyReused controls whether right-sized existing blobs are sha256-checked
+// before reuse; see [pullOneBlob] for details.
 func pullBlobs(
 	ctx context.Context,
 	blobs []blobTransfer,
@@ -75,6 +78,7 @@ func pullBlobs(
 	localFs vroot.Fs[vroot.File],
 	localDirs OciDirs,
 	parallelism int,
+	verifyReused bool,
 ) (PutBlobsResult, error) {
 	var (
 		result PutBlobsResult
@@ -91,7 +95,7 @@ func pullBlobs(
 		}
 		// capture
 		g.Go(func() error {
-			sent, err := pullOneBlob(gctx, bt, srcDirs, localFs, localDirs)
+			sent, err := pullOneBlob(gctx, bt, srcDirs, localFs, localDirs, verifyReused)
 			if err != nil {
 				return fmt.Errorf("blob %s: %w", bt.Digest, err)
 			}
@@ -113,12 +117,17 @@ func pullBlobs(
 // canonical share path, using the fsutil Pull primitive with sha256
 // verification.
 // Returns (true, nil) when bytes were written; (false, nil) when already complete.
+//
+// When verifyReused is true and a right-sized local file exists, the file is
+// sha256-verified before reuse. A corrupt file (right size, wrong content) is
+// removed so the download path re-fetches and re-verifies it.
 func pullOneBlob(
 	ctx context.Context,
 	bt blobTransfer,
 	srcDirs OciDirs,
 	localFs vroot.Fs[vroot.File],
 	localDirs OciDirs,
+	verifyReused bool,
 ) (bool, error) {
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	info := fsutil.ContentInfo{ETag: bt.Digest.String(), Size: bt.Size}
@@ -131,11 +140,35 @@ func pullOneBlob(
 	// Check if already complete.
 	if fi, err := localFs.Stat(blobPath); err == nil {
 		if fi.Size() == bt.Size {
-			logger.LogAttrs(ctx, slog.LevelInfo, "transfer.pull.skip",
-				slog.String("blob", bt.Digest.String()),
-				slog.Int64("size", fi.Size()),
-			)
-			return false, nil
+			if verifyReused {
+				// Verify sha256 of existing file before reusing.
+				f, err := localFs.OpenFile(blobPath, os.O_RDONLY, 0)
+				if err == nil {
+					verifier := bt.Digest.Verifier()
+					_, copyErr := io.Copy(verifier, f)
+					_ = f.Close()
+					if copyErr == nil && verifier.Verified() {
+						logger.LogAttrs(ctx, slog.LevelInfo, "transfer.pull.skip.verified",
+							slog.String("blob", bt.Digest.String()),
+							slog.Int64("size", fi.Size()),
+						)
+						return false, nil
+					}
+					// Mismatch or read error: remove and re-download.
+					logger.LogAttrs(ctx, slog.LevelWarn, "transfer.pull.corrupt",
+						slog.String("blob", bt.Digest.String()),
+						slog.Int64("size", fi.Size()),
+					)
+					_ = localFs.Remove(blobPath)
+				}
+				// Fall through to download.
+			} else {
+				logger.LogAttrs(ctx, slog.LevelInfo, "transfer.pull.skip",
+					slog.String("blob", bt.Digest.String()),
+					slog.Int64("size", fi.Size()),
+				)
+				return false, nil
+			}
 		}
 	}
 

@@ -40,6 +40,17 @@ type DirV1 interface {
 
 var _ DirV1 = (*FsDir)(nil)
 
+// RawAccessor is an optional interface that DirV1 implementations may
+// satisfy to return verbatim raw bytes for index.json and oci-layout,
+// bypassing re-marshalling. Used by pull to mirror tag files byte-identically.
+type RawAccessor interface {
+	RawIndex() ([]byte, error)
+	RawImageLayout() ([]byte, error)
+}
+
+// Compile-time assertion: FsDir must implement RawAccessor.
+var _ RawAccessor = FsDir{}
+
 // FsDir is a [DirV1] backed by a [vroot.Fs[vroot.File]] rooted at an OCI dir.
 // Blobs are read from the spec-default `blobs/<algo>/<hex>` location.
 // Use a custom [DirV1] implementation when blobs live elsewhere
@@ -85,6 +96,18 @@ func (d FsDir) ImageLayout() (v1.ImageLayout, error) {
 	return l, nil
 }
 
+// RawIndex implements [RawAccessor].
+// Returns the verbatim raw bytes of index.json without re-marshalling.
+func (d FsDir) RawIndex() ([]byte, error) {
+	return vroot.ReadFile(d.fs, "index.json")
+}
+
+// RawImageLayout implements [RawAccessor].
+// Returns the verbatim raw bytes of oci-layout without re-marshalling.
+func (d FsDir) RawImageLayout() ([]byte, error) {
+	return vroot.ReadFile(d.fs, v1.ImageLayoutFile)
+}
+
 // Blob implements [DirV1].
 func (d FsDir) Blob(
 	ctx context.Context,
@@ -126,6 +149,24 @@ func (d SharedFsDir) Index() (v1.Index, error) { return d.dir.Index() }
 
 // ImageLayout implements [DirV1].
 func (d SharedFsDir) ImageLayout() (v1.ImageLayout, error) { return d.dir.ImageLayout() }
+
+// RawIndex implements [RawAccessor] by delegating to the inner DirV1.
+// Returns an error if the inner DirV1 does not implement RawAccessor.
+func (d SharedFsDir) RawIndex() ([]byte, error) {
+	if raw, ok := d.dir.(RawAccessor); ok {
+		return raw.RawIndex()
+	}
+	return nil, fmt.Errorf("ocidir: SharedFsDir: inner DirV1 does not implement RawAccessor")
+}
+
+// RawImageLayout implements [RawAccessor] by delegating to the inner DirV1.
+// Returns an error if the inner DirV1 does not implement RawAccessor.
+func (d SharedFsDir) RawImageLayout() ([]byte, error) {
+	if raw, ok := d.dir.(RawAccessor); ok {
+		return raw.RawImageLayout()
+	}
+	return nil, fmt.Errorf("ocidir: SharedFsDir: inner DirV1 does not implement RawAccessor")
+}
 
 // Blob implements [DirV1] reading from the dedicated blob FS.
 func (d SharedFsDir) Blob(

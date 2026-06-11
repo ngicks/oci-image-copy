@@ -1023,6 +1023,131 @@ func TestE2E_Pull_DumpImage_OciNoOp(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// E2E Scenario G: local-directory remote (no sshd required)
+// ────────────────────────────────────────────────────────────────────────────
+
+// TestE2E_LocalDirRemote_PushPull exercises the oci:/path local-directory
+// remote: push an OCI fixture to a local dir, then pull from that same dir
+// into a fresh local base — no sshd, no SFTP.
+func TestE2E_LocalDirRemote_PushPull(t *testing.T) {
+	skipUnlessReady(t)
+
+	tag := "v1.0"
+	tmp := t.TempDir()
+
+	// XDG_CONFIG_HOME with permissive skopeo trust policy.
+	xdgCfg := filepath.Join(tmp, "xdg-config")
+	must(t, os.MkdirAll(filepath.Join(xdgCfg, "containers"), 0o755))
+	must(t, os.WriteFile(
+		filepath.Join(xdgCfg, "containers", "policy.json"),
+		[]byte(`{"default":[{"type":"insecureAcceptAnything"}]}`),
+		0o644,
+	))
+	t.Setenv("XDG_CONFIG_HOME", xdgCfg)
+
+	imageRef := "localregistry.test/testimage:" + tag
+
+	// Build OCI fixture.
+	fixture := buildOCIFixture(t, tmp, imageRef, tag)
+	validateFixtureWithSkopeo(t, fixture)
+
+	// Directories.
+	localBase := filepath.Join(tmp, "local-base")
+	must(t, os.MkdirAll(localBase, 0o755))
+	remoteDirPath := filepath.Join(tmp, "local-dir-remote")
+	must(t, os.MkdirAll(remoteDirPath, 0o755))
+
+	ctx := context.Background()
+
+	// ── Push to local-directory remote ──
+	local, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+		BaseDir:   localBase,
+		Transport: skopeo.TransportOci,
+		OCIPath:   fixture.srcDir,
+	})
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+
+	remote, err := imagecopy.NewLocalDirRemote(remoteDirPath)
+	if err != nil {
+		t.Fatalf("NewLocalDirRemote: %v", err)
+	}
+	t.Cleanup(func() { _ = remote.Close() })
+
+	pushRes, err := local.Push(ctx, imagecopy.PushArgs{
+		Images: []string{imageRef},
+	}, remote)
+	if err != nil {
+		t.Fatalf("Push to local-dir remote: %v", err)
+	}
+	if pushRes.FailedCount != 0 {
+		t.Fatalf("Push failed: %+v", pushRes.Reports)
+	}
+	t.Logf("local-dir push: %s", pushRes.Reports[0].SummaryLine())
+
+	// All blobs must be present in the remote dir's share/.
+	for _, dg := range fixture.allDigests() {
+		assertBlobPresent(t, remoteDirPath, dg, nil)
+	}
+
+	// ── Pull from local-directory remote ──
+	pullLocalBase := filepath.Join(tmp, "pull-local-base")
+	must(t, os.MkdirAll(pullLocalBase, 0o755))
+
+	pullLocal, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+		BaseDir:   pullLocalBase,
+		Transport: skopeo.TransportOci,
+		OCIPath:   fixture.srcDir,
+	})
+	if err != nil {
+		t.Fatalf("NewLocal for pull: %v", err)
+	}
+
+	pullRemote, err := imagecopy.NewLocalDirRemote(remoteDirPath)
+	if err != nil {
+		t.Fatalf("NewLocalDirRemote for pull: %v", err)
+	}
+	t.Cleanup(func() { _ = pullRemote.Close() })
+
+	pullRes, err := pullLocal.Pull(ctx, imagecopy.PullArgs{
+		Images:            []string{imageRef},
+		AssumeLocalHasSet: map[string]struct{}{},
+	}, pullRemote)
+	if err != nil {
+		t.Fatalf("Pull from local-dir remote: %v", err)
+	}
+	if pullRes.FailedCount != 0 {
+		t.Fatalf("Pull failed: %+v", pullRes.Reports)
+	}
+	if pullRes.Reports[0].Fetched == 0 {
+		t.Errorf("Pull: expected Fetched > 0, got 0")
+	}
+	t.Logf("local-dir pull: %s", pullRes.Reports[0].SummaryLine())
+
+	// Verify all blobs are now locally present.
+	for _, dg := range fixture.allDigests() {
+		assertBlobPresent(t, pullLocalBase, dg, nil)
+	}
+
+	// Verify with skopeo inspect.
+	localShareDir := filepath.Join(pullLocalBase, "share")
+	pullTagDir := filepath.Join(pullLocalBase,
+		"localregistry.test", "testimage", "_tags", tag)
+	ref := fmt.Sprintf("oci:%s:%s", pullTagDir, imageRef)
+	cmd := exec.Command("skopeo", "inspect",
+		"--shared-blob-dir", localShareDir, ref)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Errorf("skopeo inspect pulled image (local-dir) failed: %v\n%s", err, out)
+	} else {
+		outStr := string(out)
+		t.Logf("skopeo inspect local-dir pull OK: %s",
+			outStr[:minInt(200, len(outStr))])
+	}
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // CLI Binary Smoke Test
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -1054,21 +1179,48 @@ func TestCLIBinary_Help(t *testing.T) {
 		t.Logf("--help OK, length=%d", len(out))
 	})
 
-	t.Run("invalid_local_transport_errors", func(t *testing.T) {
+	t.Run("invalid_local_spec_errors", func(t *testing.T) {
+		// Use the new --local flag (replaces --local-transport).
+		// "bogus" is not a recognized spec.
 		cmd := exec.Command(binPath, "push",
-			"--local-transport", "bogus",
-			"--remote-host", "localhost",
+			"--local", "bogus",
+			"--remote", "ssh://localhost",
 			"someimage:latest",
 		)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
-			t.Fatal("expected non-zero exit for --local-transport bogus")
+			t.Fatal("expected non-zero exit for --local bogus")
 		}
 		outStr := string(out)
-		if !strings.Contains(outStr, "bogus") || !strings.Contains(outStr, "unsupported") {
-			t.Errorf("expected 'unsupported ... bogus' in output, got:\n%s", outStr)
+		if !strings.Contains(outStr, "bogus") || !strings.Contains(outStr, "unrecognised") {
+			t.Errorf("expected 'unrecognised ... bogus' in output, got:\n%s", outStr)
 		}
-		t.Logf("invalid transport error OK: %s", strings.TrimSpace(outStr))
+		t.Logf("invalid local spec error OK: %s", strings.TrimSpace(outStr))
+	})
+
+	t.Run("file_server_url_parsed", func(t *testing.T) {
+		// file-server remote parses the URL correctly and attempts to connect.
+		// The src dir /tmp/src does not exist so it fails on local inspection,
+		// NOT with "not implemented" (that stub has been replaced by the real impl).
+		cmd := exec.Command(binPath, "push",
+			"--local", "oci:/tmp/src",
+			"--remote", "file-server:https://bucket.example.com/prefix",
+			"someimage:latest",
+		)
+		out, err := cmd.CombinedOutput()
+		outStr := string(out)
+		// Accepted outcomes:
+		//   (a) Non-zero exit for any reason OTHER than "not implemented" stub.
+		//   (b) "not found" or similar error about /tmp/src (local does not exist).
+		// The one thing we must NOT see is the old "not implemented" stub message.
+		if err == nil {
+			t.Logf("push exited zero (unexpected but not fatal): %s", outStr)
+		} else {
+			if strings.Contains(outStr, "not implemented yet (phase B)") {
+				t.Errorf("file-server stub still active — expected real impl, got: %s", outStr)
+			}
+			t.Logf("file-server remote error (expected): %s", strings.TrimSpace(outStr))
+		}
 	})
 }
 

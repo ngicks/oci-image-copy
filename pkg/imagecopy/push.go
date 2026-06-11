@@ -89,7 +89,15 @@ func (l *Local) Push(ctx context.Context, args PushArgs, peer Remote) (PushResul
 		return PushResult{}, err
 	}
 
-	remoteHas, err := resolveRemoteHas(ctx, args, peer)
+	// Parse refs best-effort for RefPrimer.
+	var parsedRefs []imageref.ImageRef
+	for _, raw := range args.Images {
+		if ref, err := imageref.Parse(raw); err == nil {
+			parsedRefs = append(parsedRefs, ref)
+		}
+	}
+
+	remoteHas, err := resolveRemoteHas(ctx, args, peer, parsedRefs)
 	if err != nil {
 		return PushResult{}, fmt.Errorf("push: enumerate remote: %w", err)
 	}
@@ -149,10 +157,15 @@ func validatePush(args PushArgs, local *Local, peer Remote) error {
 
 // resolveRemoteHas builds the peer-has set, honoring the assume-remote-has
 // shortcut.
+//
+// refs is the list of parsed image refs being pushed, used to prime the
+// remote's meta cache via [RefPrimer] when available. This enables accurate
+// dry-run plans and blob-level deduplication for file-server remotes.
 func resolveRemoteHas(
 	ctx context.Context,
 	args PushArgs,
 	peer Remote,
+	refs []imageref.ImageRef,
 ) (map[string]struct{}, error) {
 	if args.AssumeRemoteHasSet != nil {
 		return args.AssumeRemoteHasSet, nil
@@ -164,6 +177,15 @@ func resolveRemoteHas(
 		}
 		return ds, nil
 	}
+
+	// Prime the remote's meta cache if the underlying OciDirs supports it.
+	// This loads chunkSize info and blob descriptors from existing image metas,
+	// enabling accurate ListBlobs output and correct BlobSource chunk sizes.
+	if primer, ok := peer.Dir().(RefPrimer); ok && len(refs) > 0 {
+		// Best-effort: ignore priming errors.
+		_ = primer.PrimeRefs(ctx, refs)
+	}
+
 	out := make(map[string]struct{})
 	for d, err := range peer.ListBlobs(ctx) {
 		if err != nil {
@@ -209,6 +231,23 @@ func pushOne(
 	digestsSorted := sortedDigests(toSend)
 
 	if args.DryRun {
+		// In dry-run mode, use BlobProber (if available) to probe blobs that
+		// are not yet in remoteHas. This enables accurate Sent/Reused counts
+		// without any mutating operations.
+		if prober, ok := peer.Dir().(BlobProber); ok {
+			for _, d := range digestsSorted {
+				dgst := digest.Digest(d)
+				complete, err := prober.ProbeBlob(ctx, dgst, sizes[d])
+				if err == nil && complete {
+					// Blob is already fully present; move from toSend to reused.
+					delete(toSend, d)
+					rep.Reused++
+				}
+			}
+			// Recompute digestsSorted after probing.
+			digestsSorted = sortedDigests(toSend)
+		}
+
 		var bytesSent int64
 		for _, d := range digestsSorted {
 			bytesSent += sizes[d]
@@ -226,13 +265,10 @@ func pushOne(
 		return rep
 	}
 
-	// 1. Mirror tag-dir metadata files to the peer
-	if err := mirrorTagFiles(ctx, local.fs, ref, peer.Dir()); err != nil {
-		rep.Err = fmt.Errorf("tag-dir sync: %w", err)
-		return rep
-	}
-
-	// 2. Stream missing blobs to the peer via fsutil Push primitives
+	// 1. Stream missing blobs to the peer via fsutil Push primitives.
+	// Blobs are transferred BEFORE tag-dir metadata (commit-last semantics):
+	// the peer's tag dir references only blobs that are already fully present,
+	// which improves crash consistency for all transport backends.
 	blobs := toBlobTransfers(digestsSorted, sizes)
 	res, err := pushBlobs(ctx, blobs, local.fs, peer.Dir(), DefaultRemoteParallelism)
 	if err != nil {
@@ -244,6 +280,13 @@ func pushOne(
 	// always-pinned manifest/config on a repeat push) count as reused too.
 	rep.Reused += res.Reused
 	rep.BytesSent = res.BytesSent
+
+	// 2. Mirror tag-dir metadata files to the peer (commit step).
+	// Written after all blobs so the tag dir only references present blobs.
+	if err := mirrorTagFiles(ctx, local.fs, ref, peer.Dir()); err != nil {
+		rep.Err = fmt.Errorf("tag-dir sync: %w", err)
+		return rep
+	}
 
 	// 3. Load image on peer (mirror → live storage)
 	if err := peer.LoadImage(ctx, ref); err != nil {

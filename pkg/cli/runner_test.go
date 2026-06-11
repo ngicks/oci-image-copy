@@ -22,10 +22,10 @@ func writeShim(t *testing.T, name, body string) string {
 	return dir
 }
 
-func TestLocalRunner_OK(t *testing.T) {
+func TestLocalInvoker_OK(t *testing.T) {
 	writeShim(t, "fake", `printf "hello stdout"`)
-	r := NewLocalRunner()
-	out, err := r.Run(context.Background(), []string{"fake"})
+	inv := NewLocalInvoker()
+	out, err := inv.Command(context.Background(), "fake").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,10 +34,10 @@ func TestLocalRunner_OK(t *testing.T) {
 	}
 }
 
-func TestLocalRunner_Error(t *testing.T) {
+func TestLocalInvoker_Error(t *testing.T) {
 	writeShim(t, "fake", `printf "boom\n" >&2; exit 7`)
-	r := NewLocalRunner()
-	_, err := r.Run(context.Background(), []string{"fake", "--something"})
+	inv := NewLocalInvoker()
+	_, err := inv.Command(context.Background(), "fake", "--something").Output()
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -53,6 +53,14 @@ func TestLocalRunner_Error(t *testing.T) {
 	}
 	if !strings.Contains(ce.Error(), "exit 7") {
 		t.Errorf("Error() does not contain exit code: %q", ce.Error())
+	}
+}
+
+func TestLocalInvoker_Run(t *testing.T) {
+	writeShim(t, "fake", `exit 0`)
+	inv := NewLocalInvoker()
+	if err := inv.Command(context.Background(), "fake").Run(); err != nil {
+		t.Fatal(err)
 	}
 }
 

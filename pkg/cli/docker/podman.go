@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ngicks/skopeo-image-share/pkg/cli"
+	"github.com/ngicks/oci-image-copy/pkg/cli"
 )
 
 // Podman is a typed wrapper over the podman CLI. Podman is largely
@@ -14,14 +14,14 @@ import (
 // JSON array (not NDJSON like docker) and uses Names[] for refs
 // instead of Repository/Tag — hence a separate type.
 type Podman struct {
-	Runner cli.Runner
+	Invoker cli.Invoker
 	// Exe is the podman executable name (or path). Empty defaults to
 	// "podman".
 	Exe string
 }
 
-// NewPodman returns a [Podman] driving r.
-func NewPodman(r cli.Runner) *Podman { return &Podman{Runner: r} }
+// NewPodman returns a [Podman] driving inv.
+func NewPodman(inv cli.Invoker) *Podman { return &Podman{Invoker: inv} }
 
 func (p *Podman) exe() string {
 	if p.Exe == "" {
@@ -32,7 +32,7 @@ func (p *Podman) exe() string {
 
 // Version returns the trimmed `podman --version` output.
 func (p *Podman) Version(ctx context.Context) (string, error) {
-	out, err := p.Runner.Run(ctx, []string{p.exe(), "--version"})
+	out, err := p.Invoker.Command(ctx, p.exe(), "--version").Output()
 	if err != nil {
 		return "", err
 	}
@@ -52,7 +52,7 @@ type podmanImage struct {
 // Output of `podman image ls --format json` is a JSON array; refs
 // come from each image's Names list (RepoTag-style).
 func (p *Podman) ImageLs(ctx context.Context) ([]string, error) {
-	out, err := p.Runner.Run(ctx, []string{p.exe(), "image", "ls", "--format", "json"})
+	out, err := p.Invoker.Command(ctx, p.exe(), "image", "ls", "--format", "json").Output()
 	if err != nil {
 		return nil, err
 	}

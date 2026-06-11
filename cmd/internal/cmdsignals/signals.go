@@ -1,3 +1,5 @@
+// Package cmdsignals defines the OS signals that trigger graceful
+// shutdown of the oci-image-copy CLI.
 package cmdsignals
 
 import (

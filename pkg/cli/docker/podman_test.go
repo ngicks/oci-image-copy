@@ -9,7 +9,7 @@ import (
 
 func TestPodman_Version_TrimsOutput(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{out: []byte("podman version 5.8.0\n")}
+	r := &stubInvoker{out: []byte("podman version 5.8.0\n")}
 	p := NewPodman(r)
 	v, err := p.Version(context.Background())
 	if err != nil {
@@ -22,7 +22,7 @@ func TestPodman_Version_TrimsOutput(t *testing.T) {
 
 func TestPodman_ImageLs_Argv(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{out: []byte("[]")}
+	r := &stubInvoker{out: []byte("[]")}
 	p := NewPodman(r)
 	if _, err := p.ImageLs(context.Background()); err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestPodman_ImageLs_Argv(t *testing.T) {
 
 func TestPodman_ImageLs_Fixture(t *testing.T) {
 	t.Parallel()
-	p := NewPodman(&stubRunner{out: readFixture(t, "podman-image-ls-json.json")})
+	p := NewPodman(&stubInvoker{out: readFixture(t, "podman-image-ls-json.json")})
 	refs, err := p.ImageLs(context.Background())
 	if err != nil {
 		t.Fatal(err)

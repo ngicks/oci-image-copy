@@ -8,10 +8,88 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ngicks/go-fsys-helper/vroot"
 	"github.com/ngicks/go-fsys-helper/vroot/osfs"
 )
+
+// osfsWrap wraps *osfs.Fs to satisfy vroot.Fs[vroot.File].
+type osfsWrap struct{ inner *osfs.Fs }
+
+func newOsfsWrap(path string) (*osfsWrap, error) {
+	f, err := osfs.NewFs(path)
+	if err != nil {
+		return nil, err
+	}
+	return &osfsWrap{inner: f}, nil
+}
+
+func (w *osfsWrap) Chmod(name string, mode fs.FileMode) error { return w.inner.Chmod(name, mode) }
+
+func (w *osfsWrap) Chown(
+	name string,
+	uid int,
+	gid int,
+) error {
+	return w.inner.Chown(name, uid, gid)
+}
+func (w *osfsWrap) Chtimes(name string, atime, mtime time.Time) error {
+	return w.inner.Chtimes(name, atime, mtime)
+}
+func (w *osfsWrap) Close() error                           { return w.inner.Close() }
+func (w *osfsWrap) Create(name string) (vroot.File, error) { return w.inner.Create(name) }
+
+func (w *osfsWrap) Lchown(
+	name string,
+	uid int,
+	gid int,
+) error {
+	return w.inner.Lchown(name, uid, gid)
+}
+
+func (w *osfsWrap) Link(
+	oldname, newname string,
+) error {
+	return w.inner.Link(oldname, newname)
+}
+func (w *osfsWrap) Lstat(name string) (fs.FileInfo, error)    { return w.inner.Lstat(name) }
+func (w *osfsWrap) Mkdir(name string, perm fs.FileMode) error { return w.inner.Mkdir(name, perm) }
+func (w *osfsWrap) MkdirAll(name string, perm fs.FileMode) error {
+	return w.inner.MkdirAll(name, perm)
+}
+func (w *osfsWrap) Name() string                         { return w.inner.Name() }
+func (w *osfsWrap) Open(name string) (vroot.File, error) { return w.inner.Open(name) }
+func (w *osfsWrap) OpenFile(name string, flag int, perm fs.FileMode) (vroot.File, error) {
+	return w.inner.OpenFile(name, flag, perm)
+}
+func (w *osfsWrap) ReadLink(name string) (string, error) { return w.inner.ReadLink(name) }
+func (w *osfsWrap) Remove(name string) error             { return w.inner.Remove(name) }
+func (w *osfsWrap) RemoveAll(name string) error          { return w.inner.RemoveAll(name) }
+
+func (w *osfsWrap) Rename(
+	oldname, newname string,
+) error {
+	return w.inner.Rename(oldname, newname)
+}
+func (w *osfsWrap) Stat(name string) (fs.FileInfo, error) { return w.inner.Stat(name) }
+
+func (w *osfsWrap) Symlink(
+	oldname, newname string,
+) error {
+	return w.inner.Symlink(oldname, newname)
+}
+func (w *osfsWrap) ReadDir(name string) ([]fs.DirEntry, error) {
+	f, err := w.inner.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return f.ReadDir(-1)
+}
+func (w *osfsWrap) ReadFile(name string) ([]byte, error) { return w.inner.ReadFile(name) }
+
+var _ vroot.Fs[vroot.File] = (*osfsWrap)(nil)
 
 const indexJSONFixture = `{
   "schemaVersion": 2,
@@ -25,9 +103,9 @@ const indexJSONFixture = `{
   ]
 }`
 
-func mustFs(t *testing.T, root string) vroot.Fs {
+func mustFs(t *testing.T, root string) vroot.Fs[vroot.File] {
 	t.Helper()
-	v, err := osfs.NewUnrooted(root)
+	v, err := newOsfsWrap(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,10 +194,18 @@ func TestReadManifest_MissingManifestBlob(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "blobs", "sha256"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte(indexJSONFixture), 0o644); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(root, "index.json"),
+		[]byte(indexJSONFixture),
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "oci-layout"), []byte(`{"imageLayoutVersion":"1.0.0"}`), 0o644); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(root, "oci-layout"),
+		[]byte(`{"imageLayoutVersion":"1.0.0"}`),
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	// (no manifest blob)

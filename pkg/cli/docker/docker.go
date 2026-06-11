@@ -14,19 +14,19 @@ import (
 	"io"
 	"strings"
 
-	"github.com/ngicks/skopeo-image-share/pkg/cli"
+	"github.com/ngicks/oci-image-copy/pkg/cli"
 )
 
 // Docker is a typed wrapper over the docker CLI.
 type Docker struct {
-	Runner cli.Runner
+	Invoker cli.Invoker
 	// Exe is the docker executable name (or path). Empty defaults to
 	// "docker".
 	Exe string
 }
 
-// NewDocker returns a [Docker] driving r.
-func NewDocker(r cli.Runner) *Docker { return &Docker{Runner: r} }
+// NewDocker returns a [Docker] driving inv.
+func NewDocker(inv cli.Invoker) *Docker { return &Docker{Invoker: inv} }
 
 func (d *Docker) exe() string {
 	if d.Exe == "" {
@@ -37,7 +37,7 @@ func (d *Docker) exe() string {
 
 // Version returns the trimmed `docker --version` output.
 func (d *Docker) Version(ctx context.Context) (string, error) {
-	out, err := d.Runner.Run(ctx, []string{d.exe(), "--version"})
+	out, err := d.Invoker.Command(ctx, d.exe(), "--version").Output()
 	if err != nil {
 		return "", err
 	}
@@ -65,7 +65,7 @@ type dockerInspectImage struct {
 // reconstructed as <Repository>:<Tag>; entries with `<none>`
 // repo/tag (Docker's marker for dangling images) are skipped.
 func (d *Docker) ImageLs(ctx context.Context) ([]string, error) {
-	out, err := d.Runner.Run(ctx, []string{d.exe(), "image", "ls", "--format", "json"})
+	out, err := d.Invoker.Command(ctx, d.exe(), "image", "ls", "--format", "json").Output()
 	if err != nil {
 		return nil, err
 	}

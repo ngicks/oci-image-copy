@@ -25,6 +25,11 @@ type Target struct {
 	User string
 	Host string
 	Port int
+	// ConfigFile, when non-empty, passes `-F ConfigFile` to the ssh binary
+	// so that a custom client configuration file is used instead of the
+	// user's default ~/.ssh/config. Useful in tests that need an isolated
+	// ssh config without touching the user's home directory.
+	ConfigFile string
 }
 
 // String reassembles the target for display/config input. OpenSSH CLI
@@ -45,14 +50,18 @@ func (t Target) String() string {
 }
 
 // BinaryArgs returns the ssh CLI args that select target — i.e.
-// either "name" or "[-p PORT] [user@]host". Callers append either
+// either "name" or "[-p PORT] [user@]host". When [Target.ConfigFile]
+// is non-empty, "-F ConfigFile" is prepended. Callers append either
 // "-s sftp" (for the SFTP subsystem) or "-- argv..." (for one-shot
 // remote commands).
 func BinaryArgs(t Target) []string {
-	if t.Name != "" {
-		return []string{t.Name}
+	var args []string
+	if t.ConfigFile != "" {
+		args = append(args, "-F", t.ConfigFile)
 	}
-	args := make([]string, 0, 3)
+	if t.Name != "" {
+		return append(args, t.Name)
+	}
 	if t.Port != 0 && t.Port != 22 {
 		args = append(args, "-p", strconv.Itoa(t.Port))
 	}
@@ -74,7 +83,11 @@ func BinaryArgs(t Target) []string {
 // The subprocess survives parent ctx cancellation — callers are
 // expected to manage shutdown explicitly via cmd.Process.Kill or by
 // closing the sftp.Client (which closes stdin and lets ssh exit).
-func Subsystem(ctx context.Context, target Target, stderr io.Writer) (*exec.Cmd, io.Reader, io.WriteCloser, error) {
+func Subsystem(
+	ctx context.Context,
+	target Target,
+	stderr io.Writer,
+) (*exec.Cmd, io.Reader, io.WriteCloser, error) {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		return nil, nil, nil, fmt.Errorf("ssh: ssh binary not on PATH: %w", err)
 	}

@@ -29,12 +29,15 @@ const (
 
 var images = []string{
 	// same image
-	"gcr.io/distroless/base-debian12@sha256:9dce90e688a57e59ce473ff7bc4c80bc8fe52d2303b4d99b44f297310bbd2210",
+	"gcr.io/distroless/base-debian12" +
+		"@sha256:9dce90e688a57e59ce473ff7bc4c80bc8fe52d2303b4d99b44f297310bbd2210",
 	"docker.io/library/memcached:1.6.41",
 	// same image
-	"docker.io/library/memcached@sha256:277e0c4f249b118e95ab10e535bae2fa1af772271d9152f3468e58d59348db56",
+	"docker.io/library/memcached" +
+		"@sha256:277e0c4f249b118e95ab10e535bae2fa1af772271d9152f3468e58d59348db56",
 	"docker.io/library/memcached:1.5.22",
-	"docker.io/library/memcached@sha256:12f7570b87465bdc8104c54389d6dbecff01270fd76b3853dd78a1937dd5d6c8",
+	"docker.io/library/memcached" +
+		"@sha256:12f7570b87465bdc8104c54389d6dbecff01270fd76b3853dd78a1937dd5d6c8",
 }
 
 func main() {
@@ -63,7 +66,7 @@ func run() error {
 		"go",
 		append([]string{
 			"run",
-			"./cmd/skopeo-image-share",
+			"./cmd/oci-image-copy",
 			"dump",
 			"--local-dumpdir", storePath,
 			"--local-transport", "docker",

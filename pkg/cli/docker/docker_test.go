@@ -8,19 +8,33 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+
+	"github.com/ngicks/oci-image-copy/pkg/cli"
 )
 
-type stubRunner struct {
+// stubCmd is a canned [cli.Cmd].
+type stubCmd struct {
+	out []byte
+	err error
+}
+
+func (c *stubCmd) Output() ([]byte, error) { return c.out, c.err }
+func (c *stubCmd) Run() error              { _, err := c.Output(); return err }
+
+// stubInvoker records the (exe, args) of every Command call as a flat
+// argv slice, and returns canned output / error.
+type stubInvoker struct {
 	got [][]string
 	out []byte
 	err error
 }
 
-func (r *stubRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
+func (r *stubInvoker) Command(_ context.Context, exe string, args ...string) cli.Cmd {
+	argv := append([]string{exe}, args...)
 	dup := make([]string, len(argv))
 	copy(dup, argv)
 	r.got = append(r.got, dup)
-	return r.out, r.err
+	return &stubCmd{out: r.out, err: r.err}
 }
 
 func readFixture(t *testing.T, name string) []byte {
@@ -36,7 +50,7 @@ func readFixture(t *testing.T, name string) []byte {
 
 func TestDocker_Version_TrimsOutput(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{out: []byte("Docker version 26.1.3, build abcdef\n")}
+	r := &stubInvoker{out: []byte("Docker version 26.1.3, build abcdef\n")}
 	d := NewDocker(r)
 	v, err := d.Version(context.Background())
 	if err != nil {
@@ -49,7 +63,7 @@ func TestDocker_Version_TrimsOutput(t *testing.T) {
 
 func TestDocker_ImageLs_Argv(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{out: []byte{}}
+	r := &stubInvoker{out: []byte{}}
 	d := NewDocker(r)
 	if _, err := d.ImageLs(context.Background()); err != nil {
 		t.Fatal(err)
@@ -66,7 +80,7 @@ func TestDocker_ImageLs_NDJSON(t *testing.T) {
 {"ID":"sha256:0b","Repository":"<none>","Tag":"<none>","Digest":""}
 {"ID":"sha256:50","Repository":"plantuml/plantuml-server","Tag":"jetty-v1.2026.2","Digest":""}
 `)
-	d := NewDocker(&stubRunner{out: in})
+	d := NewDocker(&stubInvoker{out: in})
 	refs, err := d.ImageLs(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +93,7 @@ func TestDocker_ImageLs_NDJSON(t *testing.T) {
 
 func TestDocker_ImageLs_Fixture(t *testing.T) {
 	t.Parallel()
-	d := NewDocker(&stubRunner{out: readFixture(t, "docker-image-ls-json.json")})
+	d := NewDocker(&stubInvoker{out: readFixture(t, "docker-image-ls-json.json")})
 	refs, err := d.ImageLs(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +155,7 @@ func TestParseDockerImageInspect_Fixture(t *testing.T) {
 func TestDocker_PropagatesRunnerError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("boom")
-	d := NewDocker(&stubRunner{err: want})
+	d := NewDocker(&stubInvoker{err: want})
 	_, err := d.ImageLs(context.Background())
 	if !errors.Is(err, want) {
 		t.Errorf("got %v, want wrap of %v", err, want)

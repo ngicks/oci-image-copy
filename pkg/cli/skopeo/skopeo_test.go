@@ -6,30 +6,42 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ngicks/oci-image-copy/pkg/cli"
 )
 
-// stubRunner records argvs it was called with and returns canned
-// output / error.
-type stubRunner struct {
+// stubCmd is a canned [cli.Cmd].
+type stubCmd struct {
+	out []byte
+	err error
+}
+
+func (c *stubCmd) Output() ([]byte, error) { return c.out, c.err }
+func (c *stubCmd) Run() error              { _, err := c.Output(); return err }
+
+// stubInvoker records the (exe, args) of every Command call as a flat
+// argv slice, and returns canned output / error.
+type stubInvoker struct {
 	got [][]string
 	out []byte
 	err error
 }
 
-func (r *stubRunner) Run(ctx context.Context, argv []string) ([]byte, error) {
+func (r *stubInvoker) Command(_ context.Context, exe string, args ...string) cli.Cmd {
+	argv := append([]string{exe}, args...)
 	dup := make([]string, len(argv))
 	copy(dup, argv)
 	r.got = append(r.got, dup)
-	return r.out, r.err
+	return &stubCmd{out: r.out, err: r.err}
 }
 
-func newSkopeo(r *stubRunner) *Skopeo {
-	return &Skopeo{Runner: r}
+func newSkopeo(r *stubInvoker) *Skopeo {
+	return &Skopeo{Invoker: r}
 }
 
 func TestSkopeo_Version_TrimsOutput(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{out: []byte("skopeo version 1.20.0\n")}
+	r := &stubInvoker{out: []byte("skopeo version 1.20.0\n")}
 	s := newSkopeo(r)
 	v, err := s.Version(context.Background())
 	if err != nil {
@@ -45,7 +57,7 @@ func TestSkopeo_Version_TrimsOutput(t *testing.T) {
 
 func TestSkopeo_Inspect_Raw_Argv(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{out: []byte(`{"schemaVersion":2}`)}
+	r := &stubInvoker{out: []byte(`{"schemaVersion":2}`)}
 	s := newSkopeo(r)
 	_, err := s.Inspect(context.Background(), TransportRef{
 		Transport: TransportContainersStorage,
@@ -62,7 +74,7 @@ func TestSkopeo_Inspect_Raw_Argv(t *testing.T) {
 
 func TestSkopeo_Inspect_NoRaw_Argv(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{out: []byte(`{}`)}
+	r := &stubInvoker{out: []byte(`{}`)}
 	s := newSkopeo(r)
 	_, err := s.Inspect(context.Background(), TransportRef{
 		Transport: TransportContainersStorage,
@@ -79,7 +91,7 @@ func TestSkopeo_Inspect_NoRaw_Argv(t *testing.T) {
 
 func TestSkopeo_Inspect_SharedBlobDir_Argv(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{}
+	r := &stubInvoker{}
 	s := newSkopeo(r)
 	_, err := s.Inspect(context.Background(),
 		TransportRef{Transport: TransportOci, Arg1: "/tmp/oci/_tags/v1", Arg2: "ghcr.io/a/b:c"},
@@ -87,7 +99,16 @@ func TestSkopeo_Inspect_SharedBlobDir_Argv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"skopeo", "inspect", "--raw", "--shared-blob-dir", "/tmp/share", "oci:/tmp/oci/_tags/v1:ghcr.io/a/b:c"}}
+	want := [][]string{
+		{
+			"skopeo",
+			"inspect",
+			"--raw",
+			"--shared-blob-dir",
+			"/tmp/share",
+			"oci:/tmp/oci/_tags/v1:ghcr.io/a/b:c",
+		},
+	}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv: got %v, want %v", r.got, want)
 	}
@@ -95,7 +116,7 @@ func TestSkopeo_Inspect_SharedBlobDir_Argv(t *testing.T) {
 
 func TestSkopeo_Inspect_ExtraArgs_Argv(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{}
+	r := &stubInvoker{}
 	s := newSkopeo(r)
 	_, err := s.Inspect(context.Background(),
 		TransportRef{Transport: TransportContainersStorage, Arg1: "myimg:latest"},
@@ -103,7 +124,16 @@ func TestSkopeo_Inspect_ExtraArgs_Argv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{{"skopeo", "inspect", "--config", "--format", "{{.Digest}}", "containers-storage:myimg:latest"}}
+	want := [][]string{
+		{
+			"skopeo",
+			"inspect",
+			"--config",
+			"--format",
+			"{{.Digest}}",
+			"containers-storage:myimg:latest",
+		},
+	}
 	if !reflect.DeepEqual(r.got, want) {
 		t.Errorf("argv: got %v, want %v", r.got, want)
 	}
@@ -111,7 +141,7 @@ func TestSkopeo_Inspect_ExtraArgs_Argv(t *testing.T) {
 
 func TestSkopeo_Copy_ToOCI_Argv(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{}
+	r := &stubInvoker{}
 	s := newSkopeo(r)
 	err := s.Copy(context.Background(),
 		TransportRef{Transport: TransportContainersStorage, Arg1: "ghcr.io/a/b:c"},
@@ -133,7 +163,7 @@ func TestSkopeo_Copy_ToOCI_Argv(t *testing.T) {
 
 func TestSkopeo_Copy_FromOCI_Argv(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{}
+	r := &stubInvoker{}
 	s := newSkopeo(r)
 	err := s.Copy(context.Background(),
 		TransportRef{Transport: TransportOci, Arg1: "/tmp/oci/_tags/c", Arg2: "ghcr.io/a/b:c"},
@@ -155,7 +185,7 @@ func TestSkopeo_Copy_FromOCI_Argv(t *testing.T) {
 
 func TestSkopeo_Copy_NoShareDir_OmitsFlag(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{}
+	r := &stubInvoker{}
 	s := newSkopeo(r)
 	err := s.Copy(context.Background(),
 		TransportRef{Transport: TransportDocker, Arg1: "registry/foo:latest"},
@@ -176,7 +206,7 @@ func TestSkopeo_Copy_NoShareDir_OmitsFlag(t *testing.T) {
 
 func TestSkopeo_Copy_RejectsShareDirWithoutOciSide(t *testing.T) {
 	t.Parallel()
-	s := newSkopeo(&stubRunner{})
+	s := newSkopeo(&stubInvoker{})
 	err := s.Copy(context.Background(),
 		TransportRef{Transport: TransportDocker, Arg1: "a/b:c"},
 		TransportRef{Transport: TransportContainersStorage, Arg1: "a/b:c"},
@@ -188,7 +218,7 @@ func TestSkopeo_Copy_RejectsShareDirWithoutOciSide(t *testing.T) {
 
 func TestSkopeo_Copy_RejectsEmptyOciDir(t *testing.T) {
 	t.Parallel()
-	s := newSkopeo(&stubRunner{})
+	s := newSkopeo(&stubInvoker{})
 	err := s.Copy(context.Background(),
 		TransportRef{Transport: TransportContainersStorage, Arg1: "x:y"},
 		TransportRef{Transport: TransportOci, Arg2: "x:y"},
@@ -200,7 +230,7 @@ func TestSkopeo_Copy_RejectsEmptyOciDir(t *testing.T) {
 
 func TestSkopeo_CompressionArgs(t *testing.T) {
 	t.Parallel()
-	r := &stubRunner{}
+	r := &stubInvoker{}
 	s := newSkopeo(r)
 	s.CompressionFormat = "zstd"
 	s.CompressionLevel = 19
@@ -238,7 +268,7 @@ func TestSkopeo_CompressionArgs(t *testing.T) {
 func TestSkopeo_PropagatesRunnerError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("simulated runner error")
-	r := &stubRunner{err: want}
+	r := &stubInvoker{err: want}
 	s := newSkopeo(r)
 	_, err := s.Inspect(context.Background(), TransportRef{
 		Transport: TransportContainersStorage, Arg1: "x:y",

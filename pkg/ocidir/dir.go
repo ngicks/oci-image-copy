@@ -31,21 +31,25 @@ type DirV1 interface {
 	// offset); callers comparing against a descriptor compare
 	// descriptor.Size against size, not against bytes consumed from rc.
 	// Returns [os.ErrNotExist] when the blob is missing.
-	Blob(ctx context.Context, d digest.Digest, offset int64) (rc io.ReadCloser, size int64, err error)
+	Blob(
+		ctx context.Context,
+		d digest.Digest,
+		offset int64,
+	) (rc io.ReadCloser, size int64, err error)
 }
 
 var _ DirV1 = (*FsDir)(nil)
 
-// FsDir is a [DirV1] backed by a [vroot.Fs] rooted at an OCI dir.
+// FsDir is a [DirV1] backed by a [vroot.Fs[vroot.File]] rooted at an OCI dir.
 // Blobs are read from the spec-default `blobs/<algo>/<hex>` location.
 // Use a custom [DirV1] implementation when blobs live elsewhere
 // (e.g. skopeo's --shared-blob-dir layout).
 type FsDir struct {
-	fs vroot.Fs
+	fs vroot.Fs[vroot.File]
 }
 
 // NewFsDir returns an [FsDir] reading from fs (rooted at an OCI dir).
-func NewFsDir(fs vroot.Fs) FsDir {
+func NewFsDir(fs vroot.Fs[vroot.File]) FsDir {
 	return FsDir{fs: fs}
 }
 
@@ -82,7 +86,11 @@ func (d FsDir) ImageLayout() (v1.ImageLayout, error) {
 }
 
 // Blob implements [DirV1].
-func (d FsDir) Blob(ctx context.Context, dg digest.Digest, offset int64) (io.ReadCloser, int64, error) {
+func (d FsDir) Blob(
+	ctx context.Context,
+	dg digest.Digest,
+	offset int64,
+) (io.ReadCloser, int64, error) {
 	_ = ctx
 	algo, hex, err := SplitDigest(string(dg))
 	if err != nil {
@@ -95,7 +103,7 @@ var _ DirV1 = (*SharedFsDir)(nil)
 
 // SharedFsDir pairs a [DirV1] (typically an [FsDir] rooted at the
 // dump dir, providing Index + ImageLayout) with a separate
-// [vroot.Fs] rooted at the shared blob pool. It models skopeo's
+// [vroot.Fs[vroot.File]] rooted at the shared blob pool. It models skopeo's
 // `--shared-blob-dir` layout, where index.json + oci-layout live in
 // one place and the per-image blobs live elsewhere.
 //
@@ -103,13 +111,13 @@ var _ DirV1 = (*SharedFsDir)(nil)
 // to the dir field.
 type SharedFsDir struct {
 	dir   DirV1
-	blobs vroot.Fs
+	blobs vroot.Fs[vroot.File]
 }
 
 // NewSharedFsDir returns a [SharedFsDir] that delegates Index and
 // ImageLayout to dir and reads blobs from blobs (rooted at the share
 // pool, layout `<algo>/<hex>`).
-func NewSharedFsDir(dir DirV1, blobs vroot.Fs) SharedFsDir {
+func NewSharedFsDir(dir DirV1, blobs vroot.Fs[vroot.File]) SharedFsDir {
 	return SharedFsDir{dir: dir, blobs: blobs}
 }
 
@@ -120,7 +128,11 @@ func (d SharedFsDir) Index() (v1.Index, error) { return d.dir.Index() }
 func (d SharedFsDir) ImageLayout() (v1.ImageLayout, error) { return d.dir.ImageLayout() }
 
 // Blob implements [DirV1] reading from the dedicated blob FS.
-func (d SharedFsDir) Blob(_ context.Context, dg digest.Digest, offset int64) (io.ReadCloser, int64, error) {
+func (d SharedFsDir) Blob(
+	_ context.Context,
+	dg digest.Digest,
+	offset int64,
+) (io.ReadCloser, int64, error) {
 	algo, hex, err := SplitDigest(string(dg))
 	if err != nil {
 		return nil, 0, err
@@ -130,8 +142,12 @@ func (d SharedFsDir) Blob(_ context.Context, dg digest.Digest, offset int64) (io
 
 // OpenSeekedBlob opens relPath on f, stats it for size, and seeks to
 // offset. Returns [os.ErrNotExist] when the blob is missing. Helper
-// for [DirV1] implementations backed by a [vroot.Fs].
-func OpenSeekedBlob(f vroot.Fs, relPath string, offset int64) (io.ReadCloser, int64, error) {
+// for [DirV1] implementations backed by a [vroot.Fs[vroot.File]].
+func OpenSeekedBlob(
+	f vroot.Fs[vroot.File],
+	relPath string,
+	offset int64,
+) (io.ReadCloser, int64, error) {
 	file, err := f.OpenFile(relPath, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, 0, err
@@ -171,25 +187,43 @@ func ReadManifest(ctx context.Context, dir DirV1) (v1.Descriptor, v1.Manifest, e
 	}
 	mDesc := idx.Manifests[0]
 	if mDesc.Digest == "" {
-		return v1.Descriptor{}, v1.Manifest{}, errors.New("ocidir: index.json manifest has no digest")
+		return v1.Descriptor{}, v1.Manifest{}, errors.New(
+			"ocidir: index.json manifest has no digest",
+		)
 	}
 
 	rc, _, err := dir.Blob(ctx, mDesc.Digest, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("%w: digest=%s", ErrMissingManifestBlob, mDesc.Digest)
+			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf(
+				"%w: digest=%s",
+				ErrMissingManifestBlob,
+				mDesc.Digest,
+			)
 		}
-		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("ocidir: read manifest blob %s: %w", mDesc.Digest, err)
+		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf(
+			"ocidir: read manifest blob %s: %w",
+			mDesc.Digest,
+			err,
+		)
 	}
 	defer rc.Close()
 
 	mData, err := io.ReadAll(rc)
 	if err != nil {
-		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("ocidir: read manifest blob %s: %w", mDesc.Digest, err)
+		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf(
+			"ocidir: read manifest blob %s: %w",
+			mDesc.Digest,
+			err,
+		)
 	}
 	man, err := ParseManifest(mData)
 	if err != nil {
-		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("ocidir: parse manifest %s: %w", mDesc.Digest, err)
+		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf(
+			"ocidir: parse manifest %s: %w",
+			mDesc.Digest,
+			err,
+		)
 	}
 	return mDesc, man, nil
 }

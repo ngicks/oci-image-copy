@@ -2,7 +2,7 @@
 // references of the form `[host[:port]/]<repo-path>[:tag|@digest]`.
 //
 // The package is intentionally small and standalone — it has no
-// dependency on the rest of skopeo-image-share so it can be reused by
+// dependency on the rest of oci-image-copy so it can be reused by
 // other tooling.
 package imageref
 
@@ -77,7 +77,11 @@ func Parse(s string) (ImageRef, error) {
 	if at := strings.LastIndex(s, "@"); at >= 0 {
 		dpart := s[at+1:]
 		if !strings.HasPrefix(dpart, DigestPrefix) {
-			return ImageRef{}, fmt.Errorf("imageref: digest %q must start with %q", dpart, DigestPrefix)
+			return ImageRef{}, fmt.Errorf(
+				"imageref: digest %q must start with %q",
+				dpart,
+				DigestPrefix,
+			)
 		}
 		hex := dpart[len(DigestPrefix):]
 		if err := validateHex(hex); err != nil {

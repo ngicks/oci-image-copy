@@ -42,10 +42,15 @@ func ParseManifest(data []byte) (v1.Manifest, error) {
 	if err := json.Unmarshal(data, &probe); err == nil {
 		switch probe.MediaType {
 		case v1.MediaTypeImageIndex, MediaTypeDockerList:
-			return v1.Manifest{}, fmt.Errorf("manifest: got index/list mediaType %q, expected single manifest", probe.MediaType)
+			return v1.Manifest{}, fmt.Errorf(
+				"manifest: got index/list mediaType %q, expected single manifest",
+				probe.MediaType,
+			)
 		}
 		if len(probe.Manifests) > 0 && probe.MediaType == "" {
-			return v1.Manifest{}, errors.New("manifest: input looks like an index (has .manifests[]) but no mediaType")
+			return v1.Manifest{}, errors.New(
+				"manifest: input looks like an index (has .manifests[]) but no mediaType",
+			)
 		}
 	}
 

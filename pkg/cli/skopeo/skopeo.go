@@ -1,6 +1,6 @@
 // Package skopeo is a typed wrapper over the skopeo CLI. It does not
 // look at flag spellings or the installed skopeo version; runtime
-// errors surface via the [Runner] implementation.
+// errors surface via the [Invoker] implementation.
 package skopeo
 
 import (
@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ngicks/skopeo-image-share/pkg/cli"
+	"github.com/ngicks/oci-image-copy/pkg/cli"
 )
 
 type Transport string
@@ -25,7 +25,8 @@ const (
 
 type TransportRef struct {
 	Transport Transport
-	// ref for "containers-storage", "docker" and "docker-daemon", path for "dir", "docker-archive" and "oci"
+	// ref for "containers-storage", "docker" and "docker-daemon", path for "dir", "docker-archive"
+	// and "oci"
 	Arg1 string
 	// tag for "oci", optional docker-reference for "docker-archive"
 	Arg2 string
@@ -69,7 +70,7 @@ func appendTransportRefTag(transport Transport, arg1, arg2 string) (string, erro
 
 // Skopeo is a typed wrapper over the skopeo CLI.
 type Skopeo struct {
-	Runner cli.Runner
+	Invoker cli.Invoker
 	// Exe is the skopeo executable name (or path). Empty defaults to
 	// "skopeo".
 	Exe string
@@ -93,7 +94,7 @@ func (s *Skopeo) exe() string {
 
 // Version returns the trimmed `skopeo --version` output.
 func (s *Skopeo) Version(ctx context.Context) (string, error) {
-	out, err := s.Runner.Run(ctx, []string{s.exe(), "--version"})
+	out, err := s.Invoker.Command(ctx, s.exe(), "--version").Output()
 	if err != nil {
 		return "", err
 	}
@@ -117,7 +118,7 @@ func (s *Skopeo) Inspect(
 	if err != nil {
 		return nil, err
 	}
-	args := []string{s.exe(), "inspect"}
+	args := []string{"inspect"}
 	if raw {
 		args = append(args, "--raw")
 	}
@@ -125,7 +126,8 @@ func (s *Skopeo) Inspect(
 		args = append(args, "--shared-blob-dir", sharedBlobDir)
 	}
 	args = append(args, extraArgs...)
-	return s.Runner.Run(ctx, append(args, srcStr))
+	args = append(args, srcStr)
+	return s.Invoker.Command(ctx, s.exe(), args...).Output()
 }
 
 // Copy copies src into dst using the shared blob pool at
@@ -148,22 +150,29 @@ func (s *Skopeo) Copy(ctx context.Context, src, dst TransportRef, sharedBlobDir 
 		return fmt.Errorf("src and dst is same: %q", srcStr)
 	}
 
-	argv := []string{s.exe(), "copy"}
-	argv = append(argv, s.compressionArgs()...)
+	args := []string{"copy"}
+	args = append(args, s.compressionArgs()...)
 	if sharedBlobDir != "" {
 		switch {
-		case src.Transport == TransportOci:
-			argv = append(argv, "--src-shared-blob-dir", sharedBlobDir)
 		case dst.Transport == TransportOci:
-			argv = append(argv, "--dest-shared-blob-dir", sharedBlobDir)
+			// Destination is OCI: blobs should be deposited into the shared
+			// blob pool. This covers both non-oci→oci and oci→oci copies.
+			args = append(args, "--dest-shared-blob-dir", sharedBlobDir)
+		case src.Transport == TransportOci:
+			// Only source is OCI (destination is non-oci): read blobs from
+			// the shared pool.
+			args = append(args, "--src-shared-blob-dir", sharedBlobDir)
 		default:
-			return fmt.Errorf("skopeo: sharedBlobDir requires one side to be %q (got src=%q dst=%q)",
-				TransportOci, src.Transport, dst.Transport)
+			return fmt.Errorf(
+				"skopeo: sharedBlobDir requires one side to be %q (got src=%q dst=%q)",
+				TransportOci,
+				src.Transport,
+				dst.Transport,
+			)
 		}
 	}
-	argv = append(argv, srcStr, dstStr)
-	_, err = s.Runner.Run(ctx, argv)
-	return err
+	args = append(args, srcStr, dstStr)
+	return s.Invoker.Command(ctx, s.exe(), args...).Run()
 }
 
 func (s *Skopeo) compressionArgs() []string {

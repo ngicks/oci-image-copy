@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"iter"
 	"os/exec"
@@ -24,8 +25,8 @@ import (
 	"github.com/pkg/sftp"
 )
 
-// ErrReadOnly is returned by [Remote.LoadImage] and the write side of
-// [OciDirs] when the peer is read-only.
+// ErrReadOnly is returned by [Remote.LoadImage], [Remote.DumpImage], and the
+// write side of [OciDirs] when the peer is read-only.
 var ErrReadOnly = errors.New("remote: read-only")
 
 // Remote is an OCI store the orchestrator can read from and (when not
@@ -62,6 +63,40 @@ type Remote interface {
 	// only; returns nil (no-op) when the peer has no live storage to
 	// load into (e.g., a pure OCI mirror).
 	LoadImage(ctx context.Context, ref imageref.ImageRef) error
+
+	// DumpImage materializes ref from the peer's live storage into the
+	// peer's content-addressable store (the mirror), so that
+	// Dir().Image(ref) and the blob set behind it become readable.
+	// It is the inverse of LoadImage.
+	//
+	//   - Implementations backed by a live storage (containers-storage /
+	//     docker-daemon over SSH) run the equivalent of
+	//     `skopeo copy <transport>:<ref> oci:<tagDir>` with the shared
+	//     blob pool on the peer.
+	//   - Implementations whose store IS the live storage (pure oci:
+	//     mirrors, S3-like stores) return nil without doing anything.
+	//   - Read-only peers return [ErrReadOnly] (the pull orchestrator
+	//     treats this as advisory: it logs and proceeds to the mirror
+	//     read, which gives the definitive error if the content is
+	//     genuinely absent).
+	//
+	// DumpImage is idempotent per (ref, content): re-dumping an
+	// unchanged tag is cheap because skopeo skips blobs already present
+	// in the shared pool. It is called for every pulled ref even when
+	// the mirror already has the tag, because tags move; the live
+	// storage is the source of truth on the peer.
+	DumpImage(ctx context.Context, ref imageref.ImageRef) error
+
+	// InspectImage returns the raw manifest bytes for ref as known to
+	// the peer's source of truth, without mutating anything. Used by
+	// pull --dry-run to compute the transfer plan without dumping on
+	// the peer.
+	//
+	//   - Live-storage implementations run
+	//     `skopeo inspect --raw <transport>:<ref>` on the peer.
+	//   - Mirror-only implementations read the manifest from the store
+	//     directly.
+	InspectImage(ctx context.Context, ref imageref.ImageRef) ([]byte, error)
 }
 
 // RemoteConfig configures [NewRemote].
@@ -336,6 +371,76 @@ func (r *sshRemote) LoadImage(ctx context.Context, ref imageref.ImageRef) error 
 		return fmt.Errorf("remote: load image %s: %w", ref.String(), err)
 	}
 	return nil
+}
+
+// DumpImage implements [Remote] by running `skopeo copy <transport>:<ref>
+// oci:<tagDir>:<ref>` on the peer, depositing blobs into the shared pool.
+// No-op (nil) when transport == oci (the mirror IS the live store).
+// Returns [ErrReadOnly] when the peer is read-only.
+func (r *sshRemote) DumpImage(ctx context.Context, ref imageref.ImageRef) error {
+	if r.transport == skopeo.TransportOci {
+		return nil
+	}
+	if r.ReadOnly() {
+		return ErrReadOnly
+	}
+	rel, err := RelDumpDir(ref)
+	if err != nil {
+		return err
+	}
+	tagDirAbs := filepath.ToSlash(filepath.Join(r.baseDir, filepath.FromSlash(rel)))
+	shareAbs := filepath.ToSlash(filepath.Join(r.baseDir, "share"))
+	// Ensure the tag-dir parents exist on the peer (skopeo requires the
+	// destination OCI dir to exist before writing index.json / oci-layout).
+	if err := r.fs.MkdirAll(rel, 0o755); err != nil {
+		return fmt.Errorf("remote: dump image %s: mkdir %s: %w", ref.String(), rel, err)
+	}
+	src, dst, sharedBlobDir := DumpArgv(r.transport, ref, tagDirAbs, shareAbs)
+	if err := r.skopeoCli.Copy(ctx, src, dst, sharedBlobDir); err != nil {
+		return fmt.Errorf("remote: dump image %s: %w", ref.String(), err)
+	}
+	return nil
+}
+
+// InspectImage implements [Remote]. For live transports it runs
+// `skopeo inspect --raw <transport>:<ref>` on the peer. For oci transport
+// it reads the manifest from the mirror via [ocidir.ReadManifest] and
+// returns the raw manifest bytes.
+func (r *sshRemote) InspectImage(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
+	if r.transport == skopeo.TransportOci {
+		// Read the raw manifest blob bytes directly from the mirror. We must
+		// return the raw bytes (not re-marshalled JSON) so the sha256 digest of
+		// the returned bytes equals the manifest digest in index.json.
+		dir := r.dirs.Image(ref)
+		idx, err := dir.Index()
+		if err != nil {
+			return nil, fmt.Errorf("remote: inspect image %s: read index: %w", ref.String(), err)
+		}
+		mDesc := idx.Manifests[0]
+		if mDesc.Digest == "" {
+			return nil, fmt.Errorf("remote: inspect image %s: index has no manifest digest",
+				ref.String())
+		}
+		rc, _, err := r.dirs.Blob(ctx, mDesc.Digest, 0)
+		if err != nil {
+			return nil, fmt.Errorf("remote: inspect image %s: read manifest blob: %w",
+				ref.String(), err)
+		}
+		defer rc.Close()
+		data, err := io.ReadAll(rc)
+		if err != nil {
+			return nil, fmt.Errorf("remote: inspect image %s: read manifest: %w", ref.String(), err)
+		}
+		return data, nil
+	}
+	raw, err := r.skopeoCli.Inspect(ctx,
+		skopeo.TransportRef{Transport: r.transport, Arg1: ref.String()},
+		true, "",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("remote: inspect image %s: %w", ref.String(), err)
+	}
+	return raw, nil
 }
 
 // listBlobsFromFs walks fs/share/sha256/* and yields each digest.

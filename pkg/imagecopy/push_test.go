@@ -3,6 +3,7 @@ package imagecopy
 import (
 	"context"
 	"errors"
+	"io"
 	"iter"
 	"os"
 	"path/filepath"
@@ -16,6 +17,12 @@ import (
 	"github.com/opencontainers/go-digest"
 )
 
+// inspectCall records the arguments of one [SkopeoLike.Inspect] invocation.
+type inspectCall struct {
+	Src skopeo.TransportRef
+	Raw bool
+}
+
 // recordingSkopeo is a fake [SkopeoLike] that records calls and lets
 // tests fabricate responses. copyTo / copyFrom hooks are dispatched
 // based on which side of [Copy] is OCI.
@@ -28,6 +35,10 @@ type recordingSkopeo struct {
 	inspectCount  atomic.Int32
 	copyToCount   atomic.Int32
 	copyFromCount atomic.Int32
+
+	// lastInspect holds the most recent Inspect call arguments, updated
+	// atomically-safe via the same single-writer pattern used in tests.
+	lastInspect inspectCall
 }
 
 func (s *recordingSkopeo) Version(ctx context.Context) (string, error) {
@@ -45,6 +56,7 @@ func (s *recordingSkopeo) Inspect(
 	extraArgs ...string,
 ) ([]byte, error) {
 	s.inspectCount.Add(1)
+	s.lastInspect = inspectCall{Src: src, Raw: raw}
 	if data, ok := s.inspectRaw[string(src.Transport)+":"+src.Arg1]; ok {
 		return data, nil
 	}
@@ -73,7 +85,8 @@ func (s *recordingSkopeo) Copy(
 
 // fakeRemote is an in-memory [Remote] used by orchestrator tests.
 // It wires its own [vroot.Fs[vroot.File]] into a [FsOciDirs] for the read/write
-// surface, and a [SkopeoLike] for [Remote.LoadImage].
+// surface, and a [SkopeoLike] for [Remote.LoadImage] / [Remote.DumpImage] /
+// [Remote.InspectImage].
 type fakeRemote struct {
 	baseDir   string
 	transport skopeo.Transport
@@ -82,6 +95,11 @@ type fakeRemote struct {
 	fs        vroot.Fs[vroot.File]
 	dirs      *FsOciDirs
 	assumeHas map[string]struct{}
+
+	// dumpImageFn overrides the default DumpImage behavior when non-nil.
+	dumpImageFn func(ctx context.Context, ref imageref.ImageRef) error
+	// dumpCount records how many times DumpImage was called.
+	dumpCount atomic.Int32
 }
 
 func newFakeRemote(
@@ -137,6 +155,54 @@ func (f *fakeRemote) LoadImage(ctx context.Context, ref imageref.ImageRef) error
 		skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
 		skopeo.TransportRef{Transport: f.transport, Arg1: ref.String()},
 		store.ShareDir(),
+	)
+}
+
+// DumpImage implements [Remote]. If dumpImageFn is set, it is called.
+// Otherwise: oci transport is a no-op; read-only peers return [ErrReadOnly];
+// live-storage peers call skopeoCli.Copy to simulate a peer-side dump.
+func (f *fakeRemote) DumpImage(ctx context.Context, ref imageref.ImageRef) error {
+	f.dumpCount.Add(1)
+	if f.dumpImageFn != nil {
+		return f.dumpImageFn(ctx, ref)
+	}
+	if f.transport == skopeo.TransportOci {
+		return nil
+	}
+	if f.readOnly {
+		return ErrReadOnly
+	}
+	store := NewStore(f.baseDir)
+	tagDirAbs, err := store.DumpDir(ref)
+	if err != nil {
+		return err
+	}
+	return f.skopeoCli.Copy(ctx,
+		skopeo.TransportRef{Transport: f.transport, Arg1: ref.String()},
+		skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
+		store.ShareDir(),
+	)
+}
+
+// InspectImage implements [Remote]. For oci transport it reads the manifest
+// from the mirror. For live transports it calls skopeoCli.Inspect.
+func (f *fakeRemote) InspectImage(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
+	if f.transport == skopeo.TransportOci {
+		dir := f.dirs.Image(ref)
+		idx, err := dir.Index()
+		if err != nil {
+			return nil, err
+		}
+		rc, _, err := f.dirs.Blob(ctx, idx.Manifests[0].Digest, 0)
+		if err != nil {
+			return nil, err
+		}
+		defer rc.Close()
+		return io.ReadAll(rc)
+	}
+	return f.skopeoCli.Inspect(ctx,
+		skopeo.TransportRef{Transport: f.transport, Arg1: ref.String()},
+		true, "",
 	)
 }
 

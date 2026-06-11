@@ -39,6 +39,35 @@ func localTransportRef(
 	}
 }
 
+// DumpArgv is the single source of truth for the skopeo copy argument
+// triple used when dumping a live-storage image into an OCI mirror.
+// It returns:
+//
+//   - src: the transport ref for the live-storage source (e.g.
+//     containers-storage:<ref> or docker-daemon:<ref>). Callers that
+//     need to dump FROM an oci: source must build their own src ref via
+//     [localTransportRef] because that case requires an extra path arg.
+//   - dst: the oci: destination ref (oci:<tagDirAbs>:<ref>).
+//   - sharedBlobDir: the absolute path to the shared blob pool.
+//
+// Both [Local.Dump] and [sshRemote.DumpImage] call this function so that
+// their skopeo argv constructions cannot diverge.
+func DumpArgv(
+	transport skopeo.Transport,
+	ref imageref.ImageRef,
+	tagDirAbs string,
+	shareAbs string,
+) (src skopeo.TransportRef, dst skopeo.TransportRef, sharedBlobDir string) {
+	src = skopeo.TransportRef{Transport: transport, Arg1: ref.String()}
+	dst = skopeo.TransportRef{
+		Transport: skopeo.TransportOci,
+		Arg1:      tagDirAbs,
+		Arg2:      ref.String(),
+	}
+	sharedBlobDir = shareAbs
+	return src, dst, sharedBlobDir
+}
+
 // Local is the local-side push/pull endpoint. It owns the resolved
 // base data dir, the local skopeo / podman / docker wrappers, and an
 // [vroot.Fs[vroot.File]] rooted at BaseDir. Build via [NewLocal].
@@ -199,11 +228,14 @@ func (l *Local) Dump(ctx context.Context, ref imageref.ImageRef) (string, error)
 	if err := l.fs.MkdirAll(tagDirRel, 0o755); err != nil {
 		return "", fmt.Errorf("dump: mkdir %s: %w", tagDirRel, err)
 	}
-	if err := l.skopeoCli.Copy(ctx,
-		localTransportRef(l.transport, l.ociPath, ref),
-		skopeo.TransportRef{Transport: skopeo.TransportOci, Arg1: tagDirAbs, Arg2: ref.String()},
-		store.ShareDir(),
-	); err != nil {
+	src, dst, sharedBlobDir := DumpArgv(l.transport, ref, tagDirAbs, store.ShareDir())
+	// For the oci: source transport, the src ref needs the path arg that
+	// DumpArgv does not set (DumpArgv is only used for live transports).
+	// Override src with the full oci ref when needed.
+	if l.transport == skopeo.TransportOci {
+		src = localTransportRef(l.transport, l.ociPath, ref)
+	}
+	if err := l.skopeoCli.Copy(ctx, src, dst, sharedBlobDir); err != nil {
 		return "", fmt.Errorf("dump: skopeo copy: %w", err)
 	}
 	return tagDirAbs, nil

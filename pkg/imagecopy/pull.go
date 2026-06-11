@@ -10,6 +10,8 @@ import (
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
 	"github.com/ngicks/oci-image-copy/pkg/ocidir"
+	"github.com/opencontainers/go-digest"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // PullArgs configures one [Local.Pull] invocation. Mirror of [PushArgs]
@@ -51,12 +53,17 @@ type PullResult struct {
 
 // Pull orchestrates the pull direction (peer → local).
 //
-// Pull assumes ref already exists in the peer's OCI mirror. The peer
-// is treated as a passive content-addressable store; the orchestrator
-// no longer triggers a peer-side `skopeo copy` to materialize the
-// image first. Callers wanting to pull from a peer's live storage
-// (containers-storage / docker-daemon) need to dump it into the
-// peer's mirror separately before calling Pull.
+// Pull first asks the peer to materialize the image into its own
+// content-addressable store (via [Remote.DumpImage]), then diffs the
+// digest closure against the local inventory and fetches missing blobs.
+// For peers whose store IS the live storage (e.g. a pure oci: mirror),
+// DumpImage is a no-op. For read-only peers, DumpImage returns
+// [ErrReadOnly]; Pull logs a warning and proceeds to the mirror read,
+// which gives the definitive error if the content is genuinely absent.
+//
+// --dry-run replaces the DumpImage+ReadManifest pair with a
+// [Remote.InspectImage] call so the plan can be computed without any
+// mutation on the peer.
 func (l *Local) Pull(ctx context.Context, args PullArgs, peer Remote) (PullResult, error) {
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 
@@ -150,10 +157,58 @@ func pullOne(
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	rep := PullImageReport{Ref: ref, DryRun: args.DryRun}
 
-	mDesc, man, err := ocidir.ReadManifest(ctx, peer.Dir().Image(ref))
-	if err != nil {
-		rep.Err = fmt.Errorf("read peer manifest: %w", err)
-		return rep
+	var mDesc v1.Descriptor
+	var man v1.Manifest
+
+	if args.DryRun {
+		// Dry-run: use InspectImage to get the manifest without mutating
+		// anything on the peer (no DumpImage call).
+		raw, err := peer.InspectImage(ctx, ref)
+		if err != nil {
+			rep.Err = fmt.Errorf("inspect peer manifest: %w", err)
+			return rep
+		}
+		parsedMan, err := ocidir.ParseManifest(raw)
+		if err != nil {
+			rep.Err = fmt.Errorf("parse peer manifest: %w", err)
+			return rep
+		}
+		man = parsedMan
+		mDesc = v1.Descriptor{
+			MediaType: man.MediaType,
+			Digest:    digest.Digest(ocidir.DigestBytes(raw)),
+			Size:      int64(len(raw)),
+		}
+	} else {
+		// Non-dry-run: ask the peer to materialize the image into its mirror
+		// first, then read the manifest from there.
+		dumpSkippedReadOnly := false
+		if err := peer.DumpImage(ctx, ref); err != nil {
+			if errors.Is(err, ErrReadOnly) {
+				dumpSkippedReadOnly = true
+				logger.LogAttrs(ctx, slog.LevelWarn, "pull.dump.read-only",
+					slog.String("ref", ref.String()),
+					slog.String("msg", "peer is read-only; proceeding to mirror read"),
+				)
+			} else {
+				rep.Err = fmt.Errorf("peer dump: %w", err)
+				return rep
+			}
+		}
+		var err error
+		mDesc, man, err = ocidir.ReadManifest(ctx, peer.Dir().Image(ref))
+		if err != nil {
+			if dumpSkippedReadOnly {
+				rep.Err = fmt.Errorf(
+					"read peer manifest (peer is read-only, remote dump skipped;"+
+						" image may be absent from the peer's store): %w",
+					err,
+				)
+			} else {
+				rep.Err = fmt.Errorf("read peer manifest: %w", err)
+			}
+			return rep
+		}
 	}
 
 	descs := ocidir.AllDescriptors(mDesc, man)

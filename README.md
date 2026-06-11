@@ -121,9 +121,18 @@ when the caller already knows the peer's blob inventory.
 
 ### `pull IMAGE [IMAGE...]`
 
-Pull images from the remote peer into the local transport. The image must
-already exist in the peer's OCI mirror (use `dump` or a prior `push` from the
-other side to populate it).
+Pull images from the remote peer into the local transport. Pull is **one-shot**:
+for peers backed by a live container runtime (`containers-storage`,
+`docker-daemon`), the peer first materializes the image from its live storage
+into its own OCI mirror via a remote-side `skopeo copy`. The orchestrator then
+diffs the digest closure and fetches only the missing blobs.
+
+For peers configured with `--remote-transport=oci` (a pure OCI mirror), the
+materialization step is a no-op — the mirror already IS the store.
+
+For read-only peers the materialization step is skipped with a warning; Pull
+proceeds to read the peer's mirror directly. If the image is absent from the
+mirror as well, Pull returns an error.
 
 Additional flag: `--assume-local-has <digest,...>` — skip local enumeration.
 
@@ -146,9 +155,6 @@ at CLI startup with a clear error message listing the supported set:
 - No concurrent invocations against the same `<base>/` (no locking on
   `share/`, `.part`, or tag dirs).
 - No `--all-platforms` fan-out from `oci:` index sources.
-- `pull` assumes the image already exists in the peer's OCI mirror; it
-  does not trigger a remote-side `skopeo copy` from live storage. Use `push`
-  from the other host, or `dump` on the remote host first.
 - No `~/.ssh/config` parsing in-process. The connectivity probe shells out to
   `ssh -G <host>` so config-derived `ProxyJump`/`Include` paths work for the
   probe, but the in-process SFTP dial delegates to the same system `ssh`
@@ -176,6 +182,7 @@ Each test uses an isolated `ssh_config` (written to a temp dir) via
 | `TestE2E_DryRun` | Dry-run push leaves the remote filesystem completely unchanged. |
 | `TestE2E_ResumeFromPartialPush` | Pre-seeded `.part` + `.part.etag` on remote is resumed, not restarted; sidecars removed on success. |
 | `TestE2E_DigestMismatchOnPullResume` | Corrupt `.part` (same size, wrong bytes) on local triggers sha256 hook, cleans up sidecars, fails without committing. |
+| `TestE2E_Pull_DumpImage_OciNoOp` | DumpImage is a no-op for oci-transport peers; pull succeeds and the remote store is not mutated. |
 | `TestCLIBinary_Help` | CLI binary builds and `--help` lists `push`/`pull`/`dump`; invalid transport yields a clear error. |
 
 ### Running

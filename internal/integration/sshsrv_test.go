@@ -949,6 +949,80 @@ func TestE2E_DigestMismatchOnPullResume(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// E2E Scenario F: DumpImage no-op for oci transport
+// ────────────────────────────────────────────────────────────────────────────
+
+// TestE2E_Pull_DumpImage_OciNoOp verifies that pulling from an oci-transport
+// remote works end-to-end with the new one-shot pull semantics: DumpImage is
+// a no-op for oci transport (the mirror IS the live store), so no extra SSH
+// exec traffic is generated and the pull result is identical to the pre-
+// DumpImage baseline.
+func TestE2E_Pull_DumpImage_OciNoOp(t *testing.T) {
+	tag := "v1.0"
+	e := newTestEnv(t, tag)
+	ctx := context.Background()
+
+	remoteOCIPath := filepath.Join(e.remoteTmp, "oci-store")
+	must(t, os.MkdirAll(remoteOCIPath, 0o755))
+
+	// Seed the remote by pushing first.
+	{
+		seedLocal := e.makeLocal(ctx)
+		seedRemote := e.makeRemote(ctx, remoteOCIPath)
+		if _, err := seedLocal.Push(ctx, imagecopy.PushArgs{
+			Images: []string{e.imageRef()},
+		}, seedRemote); err != nil {
+			t.Fatalf("seed push: %v", err)
+		}
+	}
+
+	// Snapshot remote SFTP root before the pull so we can assert that
+	// DumpImage causes no additional writes.
+	beforeRemote := snapshotFileList(t, e.remoteTmp)
+
+	// Pull into a fresh local base.
+	pullLocalBase := filepath.Join(e.tmpDir, "pull-noop-local-base")
+	must(t, os.MkdirAll(pullLocalBase, 0o755))
+	pullLocal, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+		BaseDir:   pullLocalBase,
+		Transport: skopeo.TransportOci,
+		OCIPath:   e.fixture.srcDir,
+	})
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+
+	remote := e.makeRemote(ctx, remoteOCIPath)
+	res, err := pullLocal.Pull(ctx, imagecopy.PullArgs{
+		Images:            []string{e.imageRef()},
+		AssumeLocalHasSet: map[string]struct{}{},
+	}, remote)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	if res.FailedCount != 0 {
+		t.Fatalf("Pull failed: %+v", res.Reports)
+	}
+	if res.Reports[0].Fetched == 0 {
+		t.Errorf("Pull: expected Fetched > 0, got 0")
+	}
+	t.Logf("pull (DumpImage no-op) result: %s", res.Reports[0].SummaryLine())
+
+	// The remote store must be unchanged: DumpImage for oci transport is a
+	// pure no-op and must not write anything.
+	afterRemote := snapshotFileList(t, e.remoteTmp)
+	if !fileListsEqual(beforeRemote, afterRemote) {
+		t.Errorf("remote changed after DumpImage no-op pull:\nbefore: %v\nafter:  %v",
+			beforeRemote, afterRemote)
+	}
+
+	// All blobs must be present locally.
+	for _, dg := range e.fixture.allDigests() {
+		assertBlobPresent(t, pullLocalBase, dg, nil)
+	}
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // CLI Binary Smoke Test
 // ────────────────────────────────────────────────────────────────────────────
 

@@ -108,10 +108,13 @@ type Remote interface {
 //     no live storage to load into).
 //   - OCIPath is required when Transport == [skopeo.TransportOci];
 //     it is the absolute path on the peer where the OCI store lives.
+//   - Compression controls skopeo copy destination compression. When unset, it
+//     defaults to zstd level 20.
 type RemoteConfig struct {
-	Target    ssh.Target
-	Transport skopeo.Transport
-	OCIPath   string
+	Target      ssh.Target
+	Transport   skopeo.Transport
+	OCIPath     string
+	Compression CompressionConfig
 }
 
 // Compile-time check: [*sshRemote] satisfies [Remote].
@@ -188,7 +191,7 @@ func NewRemote(ctx context.Context, cfg RemoteConfig) (Remote, error) {
 	r.baseDir = base
 	_, posixRename := sftpC.HasExtension("posix-rename@openssh.com")
 	r.fs = sftpfsadapter.New(sftpC, posixRename, base)
-	r.skopeoCli = &skopeo.Skopeo{Invoker: cli.NewSshInvoker(cfg.Target)}
+	r.skopeoCli = newSkopeoWithCompression(cli.NewSshInvoker(cfg.Target), cfg.Compression)
 	r.dirs = NewFsOciDirs(r.fs, DefaultRemoteParallelism)
 	return r, nil
 }

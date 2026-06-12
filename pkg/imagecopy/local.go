@@ -93,6 +93,39 @@ type Local struct {
 // during pull).
 const DefaultLocalParallelism = 4
 
+// DefaultCompressionFormat and DefaultCompressionLevel are applied to every
+// skopeo copy operation created by this package unless explicitly overridden.
+const (
+	DefaultCompressionFormat = "zstd"
+	DefaultCompressionLevel  = 20
+)
+
+// CompressionConfig configures skopeo destination compression for copy
+// operations. When both fields are empty, the package default pair is used.
+// Supplying either field opts out of defaulting the other, because compression
+// levels are algorithm-specific.
+type CompressionConfig struct {
+	Format string
+	Level  int
+}
+
+func applyCompressionDefaults(cfg CompressionConfig) CompressionConfig {
+	if cfg.Format == "" && cfg.Level == 0 {
+		cfg.Format = DefaultCompressionFormat
+		cfg.Level = DefaultCompressionLevel
+	}
+	return cfg
+}
+
+func newSkopeoWithCompression(invoker cli.Invoker, cfg CompressionConfig) *skopeo.Skopeo {
+	cfg = applyCompressionDefaults(cfg)
+	return &skopeo.Skopeo{
+		Invoker:           invoker,
+		CompressionFormat: cfg.Format,
+		CompressionLevel:  cfg.Level,
+	}
+}
+
 // LocalConfig configures [NewLocal].
 //
 //   - BaseDir is optional; an empty value falls back to [DefaultBaseDir].
@@ -102,10 +135,13 @@ const DefaultLocalParallelism = 4
 //     as a dump/push source: it has no lister, so [Local.List] (needed by
 //     pull) returns an error for it.
 //   - OCIPath is required when Transport == [skopeo.TransportOci].
+//   - Compression controls skopeo copy destination compression. When unset, it
+//     defaults to zstd level 20.
 type LocalConfig struct {
-	BaseDir   string
-	Transport skopeo.Transport
-	OCIPath   string
+	BaseDir     string
+	Transport   skopeo.Transport
+	OCIPath     string
+	Compression CompressionConfig
 }
 
 // SupportedLocalTransports is the set of transports accepted by [NewLocal].
@@ -158,7 +194,7 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 		baseDir:   base,
 		transport: cfg.Transport,
 		ociPath:   cfg.OCIPath,
-		skopeoCli: &skopeo.Skopeo{Invoker: cli.NewLocalInvoker()},
+		skopeoCli: newSkopeoWithCompression(cli.NewLocalInvoker(), cfg.Compression),
 		fs:        fs,
 		dirs:      NewFsOciDirs(fs, DefaultLocalParallelism),
 	}

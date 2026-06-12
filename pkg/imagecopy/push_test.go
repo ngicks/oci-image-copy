@@ -387,10 +387,10 @@ func TestPush_DryRun_NoMutationsAnywhere(t *testing.T) {
 	t.Parallel()
 	localFS, remoteFS, localBase, remoteBase := newSides(t)
 
-	rawManifest := []byte(realManifestContent)
 	localSk := &recordingSkopeo{
-		inspectRaw: map[string][]byte{
-			"containers-storage:ghcr.io/a/b:v1": rawManifest,
+		copyTo: func(ctx context.Context, src, dst skopeo.TransportRef, sharedBlobDir string) error {
+			seedDump(t, dst.Arg1, sharedBlobDir)
+			return nil
 		},
 	}
 	remoteSk := &recordingSkopeo{}
@@ -412,14 +412,14 @@ func TestPush_DryRun_NoMutationsAnywhere(t *testing.T) {
 	if res.FailedCount != 0 {
 		t.Fatalf("dry-run had failures: %+v", res.Reports)
 	}
-	if localSk.copyToCount.Load() != 0 {
-		t.Errorf("dry-run called CopyToOCI %d times, want 0", localSk.copyToCount.Load())
+	if localSk.copyToCount.Load() != 1 {
+		t.Errorf("dry-run called CopyToOCI %d times, want 1", localSk.copyToCount.Load())
 	}
 	if remoteSk.copyFromCount.Load() != 0 {
 		t.Errorf("dry-run called CopyFromOCI %d times, want 0", remoteSk.copyFromCount.Load())
 	}
-	if got := localSk.inspectCount.Load(); got != 1 {
-		t.Errorf("dry-run Inspect count %d, want 1", got)
+	if got := localSk.inspectCount.Load(); got != 0 {
+		t.Errorf("dry-run Inspect count %d, want 0", got)
 	}
 	afterLocal := snapshotDir(t, localBase)
 	afterRemote := snapshotDir(t, remoteBase)

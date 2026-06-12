@@ -6,7 +6,7 @@ require (
 	github.com/ngicks/go-common/contextkey v0.2.0
 	github.com/ngicks/go-fsys-helper/fsutil v0.0.0-20260611004045-dbea04231ffd
 	github.com/ngicks/go-fsys-helper/stream v0.2.2-0.20260611190045-151cd32d2e1e
-	github.com/ngicks/go-fsys-helper/vroot v0.0.0-20260611004045-dbea04231ffd
+	github.com/ngicks/go-fsys-helper/vroot v0.0.0-20260612123047-bf05d1194822
 	github.com/ngicks/go-fsys-helper/vroot-adapter/sftpfs v0.0.0-20260611004045-dbea04231ffd
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1

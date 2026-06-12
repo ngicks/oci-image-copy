@@ -11,6 +11,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -30,6 +31,7 @@ import (
 	"github.com/ngicks/oci-image-copy/pkg/cli/skopeo"
 	"github.com/ngicks/oci-image-copy/pkg/cli/ssh"
 	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
+	"github.com/ngicks/oci-image-copy/pkg/imageref"
 )
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -168,6 +170,91 @@ func buildOCIFixture(t *testing.T, root, fullRef, tag string) *ociFixture {
 // allDigests returns all blob digests that must appear in the store's share dir.
 func (f *ociFixture) allDigests() []string {
 	return []string{f.layerDigest, f.configDigest, f.manifestDigest}
+}
+
+func (f *ociFixture) blobContent(dg string) []byte {
+	switch dg {
+	case f.layerDigest:
+		return f.layerContent
+	case f.configDigest:
+		return f.configContent
+	case f.manifestDigest:
+		return f.manifestContent
+	default:
+		return nil
+	}
+}
+
+func readStoredFixture(t *testing.T, baseDir string, src *ociFixture) *ociFixture {
+	t.Helper()
+
+	tagDir := filepath.Join(baseDir, "localregistry.test", "testimage", "_tags", src.tag)
+	indexContent, err := os.ReadFile(filepath.Join(tagDir, "index.json"))
+	if err != nil {
+		t.Fatalf("read stored index.json: %v", err)
+	}
+	var index struct {
+		Manifests []struct {
+			Digest string `json:"digest"`
+			Size   int64  `json:"size"`
+		} `json:"manifests"`
+	}
+	if err := json.Unmarshal(indexContent, &index); err != nil {
+		t.Fatalf("unmarshal stored index.json: %v", err)
+	}
+	if len(index.Manifests) != 1 {
+		t.Fatalf("stored index manifests = %d, want 1", len(index.Manifests))
+	}
+
+	manifestDigest := index.Manifests[0].Digest
+	manifestContent := readStoredBlob(t, baseDir, manifestDigest)
+	var manifest struct {
+		Config struct {
+			Digest string `json:"digest"`
+			Size   int64  `json:"size"`
+		} `json:"config"`
+		Layers []struct {
+			Digest string `json:"digest"`
+			Size   int64  `json:"size"`
+		} `json:"layers"`
+	}
+	if err := json.Unmarshal(manifestContent, &manifest); err != nil {
+		t.Fatalf("unmarshal stored manifest: %v", err)
+	}
+	if len(manifest.Layers) != 1 {
+		t.Fatalf("stored manifest layers = %d, want 1", len(manifest.Layers))
+	}
+
+	configContent := readStoredBlob(t, baseDir, manifest.Config.Digest)
+	layerContent := readStoredBlob(t, baseDir, manifest.Layers[0].Digest)
+
+	return &ociFixture{
+		srcDir:          src.srcDir,
+		tag:             src.tag,
+		imageRef:        src.imageRef,
+		layerDigest:     manifest.Layers[0].Digest,
+		configDigest:    manifest.Config.Digest,
+		manifestDigest:  manifestDigest,
+		layerSize:       manifest.Layers[0].Size,
+		configSize:      manifest.Config.Size,
+		manifestSize:    index.Manifests[0].Size,
+		layerContent:    layerContent,
+		configContent:   configContent,
+		manifestContent: manifestContent,
+	}
+}
+
+func readStoredBlob(t *testing.T, baseDir, dg string) []byte {
+	t.Helper()
+	_, hex, ok := strings.Cut(dg, ":")
+	if !ok {
+		t.Fatalf("bad digest %q", dg)
+	}
+	content, err := os.ReadFile(filepath.Join(baseDir, "share", "sha256", hex))
+	if err != nil {
+		t.Fatalf("read stored blob %s: %v", dg, err)
+	}
+	return content
 }
 
 // writeBlob writes content to blobsDir/<hex> where dg is "algo:hex".
@@ -643,14 +730,10 @@ func TestE2E_Push(t *testing.T) {
 	}
 	t.Logf("first push: %s", report.SummaryLine())
 
-	// Assert: all blobs are present on the remote with correct content.
-	for _, dg := range e.fixture.allDigests() {
-		_, hex, _ := strings.Cut(dg, ":")
-		srcContent, err := os.ReadFile(filepath.Join(e.fixture.srcDir, "blobs", "sha256", hex))
-		if err != nil {
-			t.Fatalf("read source blob %s: %v", dg, err)
-		}
-		assertBlobPresent(t, remoteOCIPath, dg, srcContent)
+	stored := readStoredFixture(t, remoteOCIPath, e.fixture)
+	// Assert: all recompressed blobs are present on the remote with correct content.
+	for _, dg := range stored.allDigests() {
+		assertBlobPresent(t, remoteOCIPath, dg, stored.blobContent(dg))
 	}
 
 	// Assert: tag-dir metadata files are present on the remote.
@@ -701,6 +784,7 @@ func TestE2E_Pull(t *testing.T) {
 			t.Fatalf("seed push: %v", err)
 		}
 	}
+	stored := readStoredFixture(t, remoteOCIPath, e.fixture)
 
 	// Pull into a fresh local base.
 	pullLocalBase := filepath.Join(e.tmpDir, "pull-local-base")
@@ -732,14 +816,9 @@ func TestE2E_Pull(t *testing.T) {
 	}
 	t.Logf("pull result: %s", report.SummaryLine())
 
-	// Assert blobs are present locally with correct content.
-	for _, dg := range e.fixture.allDigests() {
-		_, hex, _ := strings.Cut(dg, ":")
-		srcContent, err := os.ReadFile(filepath.Join(e.fixture.srcDir, "blobs", "sha256", hex))
-		if err != nil {
-			t.Fatalf("read source blob %s: %v", dg, err)
-		}
-		assertBlobPresent(t, pullLocalBase, dg, srcContent)
+	// Assert recompressed blobs are present locally with correct content.
+	for _, dg := range stored.allDigests() {
+		assertBlobPresent(t, pullLocalBase, dg, stored.blobContent(dg))
 	}
 
 	// Verify pulled image passes skopeo inspect via the shared blob dir layout.
@@ -816,9 +895,19 @@ func TestE2E_ResumeFromPartialPush(t *testing.T) {
 	remoteShareSha := filepath.Join(remoteOCIPath, "share", "sha256")
 	must(t, os.MkdirAll(remoteShareSha, 0o755))
 
+	local := e.makeLocal(ctx)
+	ref, err := imageref.Parse(e.imageRef())
+	if err != nil {
+		t.Fatalf("imageref.Parse: %v", err)
+	}
+	if _, err := local.Dump(ctx, ref); err != nil {
+		t.Fatalf("local dump for resume fixture: %v", err)
+	}
+	stored := readStoredFixture(t, e.localBase, e.fixture)
+
 	// Pre-seed a .part file for the layer blob on the REMOTE side.
-	_, layerHex, _ := strings.Cut(e.fixture.layerDigest, ":")
-	layerContent := e.fixture.layerContent
+	_, layerHex, _ := strings.Cut(stored.layerDigest, ":")
+	layerContent := stored.layerContent
 	if len(layerContent) < 2 {
 		t.Skip("layer too small to test resume")
 	}
@@ -828,9 +917,8 @@ func TestE2E_ResumeFromPartialPush(t *testing.T) {
 	// Write first byte only (partial).
 	must(t, os.WriteFile(partPath, layerContent[:1], 0o644))
 	// Write ETag sidecar so the FsSink trusts this partial.
-	must(t, os.WriteFile(sidecarPath, []byte(e.fixture.layerDigest), 0o644))
+	must(t, os.WriteFile(sidecarPath, []byte(stored.layerDigest), 0o644))
 
-	local := e.makeLocal(ctx)
 	remote := e.makeRemote(ctx, remoteOCIPath)
 
 	res, err := local.Push(ctx, imagecopy.PushArgs{
@@ -890,6 +978,7 @@ func TestE2E_DigestMismatchOnPullResume(t *testing.T) {
 			t.Fatalf("seed push: %v", err)
 		}
 	}
+	stored := readStoredFixture(t, remoteOCIPath, e.fixture)
 
 	// Fresh local base for the pull attempt.
 	pullLocalBase := filepath.Join(e.tmpDir, "corrupt-pull-local-base")
@@ -899,8 +988,8 @@ func TestE2E_DigestMismatchOnPullResume(t *testing.T) {
 
 	// Pre-seed LOCAL .part for the layer blob with bytes that are wrong
 	// but have the same length, so Pull doesn't short-circuit on size.
-	_, layerHex, _ := strings.Cut(e.fixture.layerDigest, ":")
-	layerContent := e.fixture.layerContent
+	_, layerHex, _ := strings.Cut(stored.layerDigest, ":")
+	layerContent := stored.layerContent
 
 	corrupt := make([]byte, len(layerContent))
 	for i := range corrupt {
@@ -910,7 +999,7 @@ func TestE2E_DigestMismatchOnPullResume(t *testing.T) {
 	partPath := filepath.Join(localShareSha, layerHex+".part")
 	sidecarPath := partPath + ".etag"
 	must(t, os.WriteFile(partPath, corrupt, 0o644))
-	must(t, os.WriteFile(sidecarPath, []byte(e.fixture.layerDigest), 0o644))
+	must(t, os.WriteFile(sidecarPath, []byte(stored.layerDigest), 0o644))
 
 	pullLocal, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
 		BaseDir:   pullLocalBase,
@@ -1017,7 +1106,8 @@ func TestE2E_Pull_DumpImage_OciNoOp(t *testing.T) {
 	}
 
 	// All blobs must be present locally.
-	for _, dg := range e.fixture.allDigests() {
+	stored := readStoredFixture(t, remoteOCIPath, e.fixture)
+	for _, dg := range stored.allDigests() {
 		assertBlobPresent(t, pullLocalBase, dg, nil)
 	}
 }
@@ -1086,8 +1176,9 @@ func TestE2E_LocalDirRemote_PushPull(t *testing.T) {
 	}
 	t.Logf("local-dir push: %s", pushRes.Reports[0].SummaryLine())
 
+	stored := readStoredFixture(t, remoteDirPath, fixture)
 	// All blobs must be present in the remote dir's share/.
-	for _, dg := range fixture.allDigests() {
+	for _, dg := range stored.allDigests() {
 		assertBlobPresent(t, remoteDirPath, dg, nil)
 	}
 
@@ -1126,7 +1217,7 @@ func TestE2E_LocalDirRemote_PushPull(t *testing.T) {
 	t.Logf("local-dir pull: %s", pullRes.Reports[0].SummaryLine())
 
 	// Verify all blobs are now locally present.
-	for _, dg := range fixture.allDigests() {
+	for _, dg := range stored.allDigests() {
 		assertBlobPresent(t, pullLocalBase, dg, nil)
 	}
 

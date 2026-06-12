@@ -435,6 +435,7 @@ func TestFileServer_MultiChunk(t *testing.T) {
 		t.Fatal("Push (multi-chunk) reported failures")
 	}
 	t.Logf("multi-chunk push: %s", res.Reports[0].SummaryLine())
+	stored := readStoredFixture(t, env.localBase, env.fixture)
 
 	naming := fileserver.DefaultNaming{}
 	ref, err := imageref.Parse(env.fixture.imageRef)
@@ -456,7 +457,7 @@ func TestFileServer_MultiChunk(t *testing.T) {
 
 	// Layer blob with chunkSize=1 → layerSize chunk PUTs.
 	puts := handler.putNames()
-	layerDgst := godigest.Digest(env.fixture.layerDigest)
+	layerDgst := godigest.Digest(stored.layerDigest)
 	chunk0 := naming.BlobChunk(layerDgst, 0)
 	chunkPrefix := strings.TrimSuffix(chunk0, "00000000")
 	layerChunkPUTs := 0
@@ -465,10 +466,10 @@ func TestFileServer_MultiChunk(t *testing.T) {
 			layerChunkPUTs++
 		}
 	}
-	if int64(layerChunkPUTs) != env.fixture.layerSize {
+	if int64(layerChunkPUTs) != stored.layerSize {
 		t.Errorf(
 			"layer chunk PUTs = %d, want %d (layer=%d bytes, chunkSize=1)",
-			layerChunkPUTs, env.fixture.layerSize, env.fixture.layerSize,
+			layerChunkPUTs, stored.layerSize, stored.layerSize,
 		)
 	}
 }
@@ -524,6 +525,7 @@ func TestFileServer_DryRunPush(t *testing.T) {
 	}, remote); err != nil {
 		t.Fatalf("real Push: %v", err)
 	}
+	stored := readStoredFixture(t, env.localBase, env.fixture)
 
 	// Dry-run against the fully pushed image: exact plan must be all-Reused.
 	// Fresh remote so no session state (meta cache) helps; the plan must come
@@ -549,7 +551,7 @@ func TestFileServer_DryRunPush(t *testing.T) {
 	// manifest chunks intact. The exact plan must be Sent=1 (the layer),
 	// Reused=2, discovered purely via HEAD probes (meta is gone).
 	naming := fileserver.DefaultNaming{}
-	layerDgst := godigest.Digest(env.fixture.layerDigest)
+	layerDgst := godigest.Digest(stored.layerDigest)
 	handler.deleteObject(naming.BlobChunk(layerDgst, 0))
 	ref, err := imageref.Parse(env.fixture.imageRef)
 	if err != nil {
@@ -570,9 +572,9 @@ func TestFileServer_DryRunPush(t *testing.T) {
 		t.Errorf("dry-run plan on partial remote: Sent=%d Reused=%d, want Sent=1 Reused=2",
 			res.Reports[0].Sent, res.Reports[0].Reused)
 	}
-	if res.Reports[0].BytesSent != env.fixture.layerSize {
+	if res.Reports[0].BytesSent != stored.layerSize {
 		t.Errorf("dry-run plan on partial remote: BytesSent=%d, want layer size %d",
-			res.Reports[0].BytesSent, env.fixture.layerSize)
+			res.Reports[0].BytesSent, stored.layerSize)
 	}
 	if puts := handler.putNames(); len(puts) != 0 {
 		t.Errorf("dry-run Push (partial remote): got %d PUTs, want 0. PUTs: %v", len(puts), puts)
@@ -588,10 +590,6 @@ func TestFileServer_InterruptResume(t *testing.T) {
 
 	const tag = "fs-resume"
 	env := newTestEnv(t, tag)
-	if env.fixture.layerSize < 2 {
-		t.Skip("layer too small for interrupt-resume test")
-	}
-
 	handler := newHTTPFileServerHandler()
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
@@ -611,13 +609,17 @@ func TestFileServer_InterruptResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initial Push: %v", err)
 	}
+	stored := readStoredFixture(t, env.localBase, env.fixture)
+	if stored.layerSize < 2 {
+		t.Skip("layer too small for interrupt-resume test")
+	}
 
 	// Simulate an interruption mid-blob: chunks upload sequentially, so an
 	// interrupt leaves a missing suffix. Delete the LAST chunk of the layer
 	// blob, and the meta (written last, so never present after an interrupt).
 	naming := fileserver.DefaultNaming{}
-	layerDgst := godigest.Digest(env.fixture.layerDigest)
-	lastChunk := int(env.fixture.layerSize/chunkSize) - 1
+	layerDgst := godigest.Digest(stored.layerDigest)
+	lastChunk := int(stored.layerSize/chunkSize) - 1
 	lastChunkName := naming.BlobChunk(layerDgst, lastChunk)
 	handler.deleteObject(lastChunkName)
 
@@ -665,11 +667,6 @@ func TestFileServer_InterruptResumePull(t *testing.T) {
 	const tag = "fs-pull-resume"
 	env := newTestEnv(t, tag)
 
-	layerSize := env.fixture.layerSize
-	if layerSize < 8 {
-		t.Skip("layer too small for interrupt-resume pull test")
-	}
-
 	handler := newHTTPFileServerHandler()
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
@@ -688,6 +685,10 @@ func TestFileServer_InterruptResumePull(t *testing.T) {
 	}, remote)
 	if err != nil {
 		t.Fatalf("initial Push: %v", err)
+	}
+	stored := readStoredFixture(t, env.localBase, env.fixture)
+	if stored.layerSize < 8 {
+		t.Skip("layer too small for interrupt-resume pull test")
 	}
 
 	// Step 2: Pull to a fresh local store.
@@ -717,7 +718,7 @@ func TestFileServer_InterruptResumePull(t *testing.T) {
 	t.Logf("first pull: %s", pullRes.Reports[0].SummaryLine())
 
 	// Step 3: Verify pull succeeded and blobs are present.
-	_, layerHex, _ := strings.Cut(env.fixture.layerDigest, ":")
+	_, layerHex, _ := strings.Cut(stored.layerDigest, ":")
 	layerBlobPath := filepath.Join(pullLocalBase, "share", "sha256", layerHex)
 	if _, err := os.Stat(layerBlobPath); err != nil {
 		t.Fatalf("layer blob not present after first pull: %v", err)
@@ -785,7 +786,7 @@ func TestFileServer_InterruptResumePull(t *testing.T) {
 		t.Fatalf("write .part file: %v", err)
 	}
 	// Create the .part.etag sidecar with the layer digest (fsutil's resume key).
-	if err := os.WriteFile(partPath+".etag", []byte(env.fixture.layerDigest), 0o644); err != nil {
+	if err := os.WriteFile(partPath+".etag", []byte(stored.layerDigest), 0o644); err != nil {
 		t.Fatalf("write .part.etag: %v", err)
 	}
 
@@ -837,8 +838,8 @@ func TestFileServer_InterruptResumePull(t *testing.T) {
 	}
 	h := sha256.Sum256(finalContent)
 	gotDigest := fmt.Sprintf("sha256:%x", h)
-	if gotDigest != env.fixture.layerDigest {
-		t.Errorf("final blob digest = %s, want %s", gotDigest, env.fixture.layerDigest)
+	if gotDigest != stored.layerDigest {
+		t.Errorf("final blob digest = %s, want %s", gotDigest, stored.layerDigest)
 	}
 	if len(finalContent) != len(layerContent) {
 		t.Errorf("final blob size = %d, want %d", len(finalContent), len(layerContent))

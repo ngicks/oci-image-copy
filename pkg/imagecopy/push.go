@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path"
 
 	"github.com/ngicks/go-common/contextkey"
@@ -296,10 +297,10 @@ func pushOne(
 	return rep
 }
 
-// dumpAndDeriveClosurePush runs `skopeo copy ... oci:<tagDir>` (or, on
-// --dry-run, `skopeo inspect --raw`) and returns the manifest
-// descriptor + parsed manifest body. Use [ocidir.AllDescriptors] on
-// the result to obtain the closure.
+// dumpAndDeriveClosurePush runs `skopeo copy ... oci:<tagDir>` and returns the
+// manifest descriptor + parsed manifest body. In dry-run mode the copy targets
+// a temporary store so the transfer plan observes the same destination
+// compression as a real push without mutating the configured local store.
 func dumpAndDeriveClosurePush(
 	ctx context.Context,
 	args PushArgs,
@@ -308,48 +309,52 @@ func dumpAndDeriveClosurePush(
 ) (v1.Descriptor, v1.Manifest, error) {
 	src := localTransportRef(local.transport, local.ociPath, ref)
 
-	if !args.DryRun {
-		store := NewStore(local.baseDir)
-		tagDirAbs, err := store.DumpDir(ref)
+	baseDir := local.baseDir
+	dstFS := local.fs
+	dstDirs := local.Dir()
+	if args.DryRun {
+		tmp, err := os.MkdirTemp("", "oci-image-copy-dry-run-*")
 		if err != nil {
-			return v1.Descriptor{}, v1.Manifest{}, err
+			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("dry-run temp store: %w", err)
 		}
-		tagDirRel, err := RelDumpDir(ref)
+		defer os.RemoveAll(tmp)
+		if err := NewStore(tmp).EnsureLayout(ctx); err != nil {
+			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("dry-run temp layout: %w", err)
+		}
+		fs, err := NewOsFs(tmp)
 		if err != nil {
-			return v1.Descriptor{}, v1.Manifest{}, err
+			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("dry-run temp fs: %w", err)
 		}
-		if err := local.fs.MkdirAll(tagDirRel, 0o755); err != nil {
-			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
-		}
-		if err := local.skopeoCli.Copy(
-			ctx,
-			src,
-			skopeo.TransportRef{
-				Transport: skopeo.TransportOci,
-				Arg1:      tagDirAbs,
-				Arg2:      ref.String(),
-			},
-			store.ShareDir(),
-		); err != nil {
-			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo copy: %w", err)
-		}
-		return ocidir.ReadManifest(ctx, local.Dir().Image(ref))
+		baseDir = tmp
+		dstFS = fs
+		dstDirs = NewFsOciDirs(fs, DefaultLocalParallelism)
 	}
 
-	raw, err := local.skopeoCli.Inspect(ctx, src, true, "")
+	store := NewStore(baseDir)
+	tagDirAbs, err := store.DumpDir(ref)
 	if err != nil {
-		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo inspect --raw: %w", err)
+		return v1.Descriptor{}, v1.Manifest{}, err
 	}
-	man, err := ocidir.ParseManifest(raw)
+	tagDirRel, err := RelDumpDir(ref)
 	if err != nil {
-		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("parse manifest: %w", err)
+		return v1.Descriptor{}, v1.Manifest{}, err
 	}
-	mDesc := v1.Descriptor{
-		MediaType: man.MediaType,
-		Digest:    digest.Digest(ocidir.DigestBytes(raw)),
-		Size:      int64(len(raw)),
+	if err := dstFS.MkdirAll(tagDirRel, 0o755); err != nil {
+		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("mkdir %s: %w", tagDirRel, err)
 	}
-	return mDesc, man, nil
+	if err := local.skopeoCli.Copy(
+		ctx,
+		src,
+		skopeo.TransportRef{
+			Transport: skopeo.TransportOci,
+			Arg1:      tagDirAbs,
+			Arg2:      ref.String(),
+		},
+		store.ShareDir(),
+	); err != nil {
+		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo copy: %w", err)
+	}
+	return ocidir.ReadManifest(ctx, dstDirs.Image(ref))
 }
 
 // mirrorTagFiles ships oci-layout + index.json from srcFS's per-ref

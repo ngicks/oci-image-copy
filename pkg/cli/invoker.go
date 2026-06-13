@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/ngicks/go-common/contextkey"
 	"github.com/ngicks/oci-image-copy/pkg/cli/ssh"
@@ -80,16 +82,44 @@ func (c *localCmd) Output() ([]byte, error) {
 	)
 
 	cmd := exec.CommandContext(c.ctx, c.exe, c.args...)
+	return runCaptured(c.ctx, cmd, RedactArgv(argv), c.tailBytes, "exec stderr",
+		slog.String("exe", c.exe))
+}
+
+// Run implements [Cmd].
+func (c *localCmd) Run() error {
+	_, err := c.Output()
+	return err
+}
+
+// runCaptured runs cmd with stdout/stderr captured into buffers, logs any
+// stderr at debug, and maps a non-zero exit (or a start failure) to a
+// [*CommandError] carrying redactedArgv, the exit code, and the tail of
+// stderr. It is the single capture-and-classify path shared by the local and
+// ssh command implementations.
+//
+// stderrMsg and extraAttrs are the slog message and additional attributes used
+// when logging captured stderr (local and ssh use different message strings).
+func runCaptured(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	redactedArgv []string,
+	tailBytes int,
+	stderrMsg string,
+	extraAttrs ...slog.Attr,
+) ([]byte, error) {
+	logger := contextkey.ValueSlogLoggerDefault(ctx)
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+
 	err := cmd.Run()
 
 	if stderr.Len() > 0 {
-		logger.LogAttrs(c.ctx, slog.LevelDebug, "exec stderr",
-			slog.String("exe", c.exe),
-			slog.String("stderr", stderr.String()),
-		)
+		attrs := append(append([]slog.Attr(nil), extraAttrs...),
+			slog.String("stderr", stderr.String()))
+		logger.LogAttrs(ctx, slog.LevelDebug, stderrMsg, attrs...)
 	}
 
 	if err != nil {
@@ -98,19 +128,13 @@ func (c *localCmd) Output() ([]byte, error) {
 			exit = cmd.ProcessState.ExitCode()
 		}
 		return stdout.Bytes(), &CommandError{
-			Argv:       RedactArgv(argv),
+			Argv:       redactedArgv,
 			ExitCode:   exit,
-			StderrTail: TailBytes(stderr.Bytes(), c.tailBytes),
+			StderrTail: TailBytes(stderr.Bytes(), tailBytes),
 			Err:        err,
 		}
 	}
 	return stdout.Bytes(), nil
-}
-
-// Run implements [Cmd].
-func (c *localCmd) Run() error {
-	_, err := c.Output()
-	return err
 }
 
 // SshInvoker is an [Invoker] that spawns a fresh `ssh ... -- <argv>`
@@ -121,6 +145,14 @@ func (c *localCmd) Run() error {
 //
 // The remote shell is `sh -c <argv>`: argv tokens are single-quoted
 // before transmission so meta-characters are inert.
+//
+// Cancellation: when the command context is cancelled, the local ssh
+// process is sent SIGTERM and, after a short [SshWaitDelay], SIGKILL'd.
+// The remote command is not signalled directly, but the local ssh sets
+// `-n -o BatchMode=yes` plus ServerAlive keepalives (see [ssh.CommandArgs]),
+// so the dropped channel makes the remote sshd reap the orphaned remote
+// process within a bounded time. Full remote-process-group kill is out of
+// scope (decision D16).
 type SshInvoker struct {
 	Target ssh.Target
 	// StderrTailBytes caps how much trailing stderr is included in
@@ -159,8 +191,18 @@ type sshCmd struct {
 	tailBytes int
 }
 
+// SshWaitDelay is how long the local ssh process is given to exit after
+// SIGTERM (on context cancellation) before it is SIGKILL'd. See
+// [exec.Cmd.WaitDelay].
+var SshWaitDelay = 2 * time.Second
+
 // Output implements [Cmd]. The full argv (exe + args) is sent to the
 // remote shell; each token is single-quoted so meta-characters are inert.
+//
+// The local ssh process gets `-n -o BatchMode=yes` plus ServerAlive
+// keepalives via [ssh.CommandArgs] (so a host that passed [ssh.Probe] cannot
+// later hang on a prompt), and is wired with a SIGTERM Cancel + [SshWaitDelay]
+// WaitDelay so context cancellation tears it down promptly (decision D16).
 func (c *sshCmd) Output() ([]byte, error) {
 	argv := append([]string{c.exe}, c.args...)
 
@@ -170,33 +212,20 @@ func (c *sshCmd) Output() ([]byte, error) {
 		slog.String("host", c.target.String()),
 	)
 
-	sshArgs := append(ssh.BinaryArgs(c.target), "--", shellQuote(argv))
+	sshArgs := append(ssh.CommandArgs(c.target), "--", shellQuote(argv))
 	cmd := exec.CommandContext(c.ctx, "ssh", sshArgs...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-
-	if stderr.Len() > 0 {
-		logger.LogAttrs(c.ctx, slog.LevelDebug, "ssh.exec.stderr",
-			slog.String("stderr", stderr.String()),
-		)
-	}
-
-	if err != nil {
-		exit := -1
-		if cmd.ProcessState != nil {
-			exit = cmd.ProcessState.ExitCode()
+	// On ctx cancellation, SIGTERM the local ssh (a clean channel teardown the
+	// remote sshd notices) rather than the default SIGKILL, then hard-kill
+	// after WaitDelay if it has not exited.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
 		}
-		return stdout.Bytes(), &CommandError{
-			Argv:       RedactArgv(argv),
-			ExitCode:   exit,
-			StderrTail: TailBytes(stderr.Bytes(), c.tailBytes),
-			Err:        err,
-		}
+		return cmd.Process.Signal(syscall.SIGTERM)
 	}
-	return stdout.Bytes(), nil
+	cmd.WaitDelay = SshWaitDelay
+
+	return runCaptured(c.ctx, cmd, RedactArgv(argv), c.tailBytes, "ssh.exec.stderr")
 }
 
 // Run implements [Cmd].

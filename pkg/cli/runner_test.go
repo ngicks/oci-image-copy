@@ -5,8 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ngicks/oci-image-copy/pkg/cli/ssh"
 )
 
 // writeShim writes a /bin/sh script named `name` into a temp dir and
@@ -61,6 +65,75 @@ func TestLocalInvoker_Run(t *testing.T) {
 	inv := NewLocalInvoker()
 	if err := inv.Command(context.Background(), "fake").Run(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSshCmd_OutputAndArgs runs the ssh command path against a fake `ssh`
+// shim on $PATH. The shim records the argv it was invoked with so the test can
+// assert that the non-interactive + keepalive flags and the shellQuote'd remote
+// word reach ssh, and that stdout round-trips.
+func TestSshCmd_OutputAndArgs(t *testing.T) {
+	dir := writeShim(t, "ssh", `printf '%s\n' "$@" > "$SSH_ARGS_FILE"; printf "remote stdout"`)
+	argsFile := filepath.Join(dir, "ssh_args.txt")
+	t.Setenv("SSH_ARGS_FILE", argsFile)
+
+	inv := NewSshInvoker(ssh.Target{Name: "prod"})
+	out, err := inv.Command(context.Background(), "skopeo", "inspect", "x:y").Output()
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if string(out) != "remote stdout" {
+		t.Errorf("stdout = %q, want %q", out, "remote stdout")
+	}
+
+	recorded, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read recorded args: %v", err)
+	}
+	got := strings.Split(strings.TrimRight(string(recorded), "\n"), "\n")
+
+	// Non-interactive + keepalive flags must be present.
+	for _, want := range []string{"-n", "BatchMode=yes"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("ssh argv missing %q; got %v", want, got)
+		}
+	}
+	// The remote argv must arrive as one shellQuote'd word after "--".
+	wantWord := shellQuote([]string{"skopeo", "inspect", "x:y"})
+	dashIdx := slices.Index(got, "--")
+	if dashIdx < 0 || dashIdx+1 >= len(got) {
+		t.Fatalf("ssh argv missing `-- <word>`; got %v", got)
+	}
+	if got[dashIdx+1] != wantWord {
+		t.Errorf("remote word = %q, want %q", got[dashIdx+1], wantWord)
+	}
+}
+
+// TestSshCmd_Cancel verifies the ssh command path honors context
+// cancellation: a shim that sleeps is torn down and Output returns promptly
+// with an error rather than blocking for the full sleep.
+func TestSshCmd_Cancel(t *testing.T) {
+	writeShim(t, "ssh", `sleep 30`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	inv := NewSshInvoker(ssh.Target{Name: "prod"})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := inv.Command(ctx, "skopeo", "inspect", "x:y").Output()
+		done <- err
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected error after cancellation, got nil")
+		}
+	case <-time.After(SshWaitDelay + 5*time.Second):
+		t.Fatal("ssh command did not terminate after cancellation")
 	}
 }
 

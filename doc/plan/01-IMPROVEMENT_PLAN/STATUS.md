@@ -4,7 +4,7 @@
 |-------|-------|--------|--------|
 | O1 | manifest digest verification (trust root) | done | - |
 | O2 | index bounds + ParseIndex choke point | done | - |
-| O3 | ssh cancellation/BatchMode + Output dedup | planned | - |
+| O3 | ssh cancellation/BatchMode + Output dedup | done | - |
 | O4 | chunk-name algorithm + probe error taxonomy | planned | - |
 | O5 | imageref host/path/tag validation | planned | - |
 | O6 | cli wrapper dedup + shellQuote tests + header redaction | planned | - |

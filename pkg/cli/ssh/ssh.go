@@ -73,6 +73,45 @@ func BinaryArgs(t Target) []string {
 	return args
 }
 
+// Keepalive tuning for one-shot remote commands. ServerAliveInterval +
+// ServerAliveCountMax bound how long the local ssh waits on a silent channel
+// before tearing it down: if the peer (or the network) goes away, ssh exits
+// within roughly Interval*CountMax seconds, dropping the channel and letting
+// the remote sshd reap the orphaned remote process. This is the
+// OpenSSH-compatible remote-teardown mechanism chosen in decision D16 (no
+// `-tt`, no remote wrapper scripts).
+const (
+	// ServerAliveInterval is the `-o ServerAliveInterval=` value (seconds).
+	ServerAliveInterval = 15
+	// ServerAliveCountMax is the `-o ServerAliveCountMax=` value.
+	ServerAliveCountMax = 3
+)
+
+// CommandArgs returns the ssh CLI args for a one-shot remote command,
+// selecting target via [BinaryArgs] and adding the flags every command
+// invocation needs:
+//
+//   - `-n` redirects stdin from /dev/null so the remote command can never
+//     consume the local stdin or block reading it;
+//   - `-o BatchMode=yes` disables every interactive prompt (passphrase,
+//     host-key confirmation, password) so a host that passes [Probe] cannot
+//     later hang the command path on a prompt;
+//   - `-o ServerAliveInterval` / `-o ServerAliveCountMax` install keepalives
+//     so a dead peer or network drop tears the channel down (and the orphaned
+//     remote process with it) within a bounded time (decision D16).
+//
+// Callers append `"--", <remote-argv-word>` to the result.
+func CommandArgs(t Target) []string {
+	args := BinaryArgs(t)
+	args = append(args,
+		"-n",
+		"-o", "BatchMode=yes",
+		"-o", "ServerAliveInterval="+strconv.Itoa(ServerAliveInterval),
+		"-o", "ServerAliveCountMax="+strconv.Itoa(ServerAliveCountMax),
+	)
+	return args
+}
+
 // Subsystem starts `ssh ... -s sftp` and returns the running command
 // together with stdout (server→client) and stdin (client→server).
 //

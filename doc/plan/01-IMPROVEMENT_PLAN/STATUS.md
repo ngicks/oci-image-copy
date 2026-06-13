@@ -2,7 +2,7 @@
 
 | Entry | Title | Status | Commit |
 |-------|-------|--------|--------|
-| O1 | manifest digest verification (trust root) | planned | - |
+| O1 | manifest digest verification (trust root) | done | - |
 | O2 | index bounds + ParseIndex choke point | planned | - |
 | O3 | ssh cancellation/BatchMode + Output dedup | planned | - |
 | O4 | chunk-name algorithm + probe error taxonomy | planned | - |

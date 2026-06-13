@@ -261,6 +261,12 @@ func (r *fileServerRemote) InspectImage(
 			"file-server inspect %s: read manifest blob: %w", ref.String(), err,
 		)
 	}
+	// Verify the raw manifest bytes hash back to the descriptor digest:
+	// callers rely on sha256(returned bytes) == manifest digest, and the
+	// chunked blob read is the trust-root content-addressed read here.
+	if err := ocidir.VerifyBlobBytes(dgst, data); err != nil {
+		return nil, fmt.Errorf("file-server inspect %s: %w", ref.String(), err)
+	}
 	return data, nil
 }
 
@@ -463,6 +469,13 @@ func (r *fileServerRemote) commitImageMeta(
 			"file-server commit meta %s: read manifest blob %s: %w",
 			ref.String(), mDesc.Digest, err,
 		)
+	}
+
+	// Verify the manifest bytes hash back to the descriptor digest before
+	// deriving the descriptor closure from them — the blob we just read
+	// is the trust root for every config/layer digest recorded in the meta.
+	if err := ocidir.VerifyBlobBytes(mDesc.Digest, manifestBytes); err != nil {
+		return fmt.Errorf("file-server commit meta %s: %w", ref.String(), err)
 	}
 
 	man, err := ocidir.ParseManifest(manifestBytes)

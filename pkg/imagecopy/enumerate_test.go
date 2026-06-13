@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -111,17 +112,28 @@ func TestEnumerate_OCI_FilesystemWalk(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
-	manifestHex := strings.Repeat("d", 64)
+	// The manifest blob must live under the path named by its real digest:
+	// ReadManifest now verifies the blob bytes against that digest, so the
+	// fixture has to be internally consistent (as any real OCI dir is).
+	manDigest := ocidir.DigestBytes([]byte(ociManifestFixture))
+	manifestHex := strings.TrimPrefix(manDigest, "sha256:")
 	looseHex := strings.Repeat("9", 64)
+
+	// index.json points its single manifest at the real manifest digest.
+	indexJSON := `{"schemaVersion":2,` +
+		`"mediaType":"application/vnd.oci.image.index.v1+json",` +
+		`"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
+		`"digest":"` + manDigest + `","size":` +
+		strconv.Itoa(len(ociManifestFixture)) + `}]}`
 
 	tagsDump := filepath.Join(tmp, "ghcr.io", "a", "b", "_tags", "v1")
 	must(t, os.MkdirAll(tagsDump, 0o755))
-	must(t, os.WriteFile(filepath.Join(tagsDump, "index.json"), []byte(indexJSONFixture), 0o644))
+	must(t, os.WriteFile(filepath.Join(tagsDump, "index.json"), []byte(indexJSON), 0o644))
 	must(t, os.WriteFile(filepath.Join(tagsDump, "oci-layout"), []byte("{}"), 0o644))
 
 	digestDump := filepath.Join(tmp, "ghcr.io", "x", "_digests", manifestHex)
 	must(t, os.MkdirAll(digestDump, 0o755))
-	must(t, os.WriteFile(filepath.Join(digestDump, "index.json"), []byte(indexJSONFixture), 0o644))
+	must(t, os.WriteFile(filepath.Join(digestDump, "index.json"), []byte(indexJSON), 0o644))
 	must(t, os.WriteFile(filepath.Join(digestDump, "oci-layout"), []byte("{}"), 0o644))
 
 	shareSha := filepath.Join(tmp, "share", "sha256")
@@ -144,7 +156,7 @@ func TestEnumerate_OCI_FilesystemWalk(t *testing.T) {
 	}
 
 	wants := []string{
-		"sha256:" + manifestHex,
+		manDigest,
 		"sha256:" + strings.Repeat("1", 64),
 		"sha256:" + strings.Repeat("a", 64),
 		"sha256:" + strings.Repeat("b", 64),

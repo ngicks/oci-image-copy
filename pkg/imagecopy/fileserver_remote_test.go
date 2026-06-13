@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -24,6 +25,7 @@ import (
 	fsfileserver "github.com/ngicks/go-fsys-helper/stream/fileserver"
 	"github.com/ngicks/oci-image-copy/pkg/imagecopy/fileserver"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
+	"github.com/ngicks/oci-image-copy/pkg/ocidir"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -473,6 +475,53 @@ func TestFileServerRemote_InspectImage_DigestMath(t *testing.T) {
 	}
 	if !bytes.Equal(got, manifestBytes) {
 		t.Errorf("InspectImage content mismatch:\ngot  %q\nwant %q", got, manifestBytes)
+	}
+}
+
+// TestFileServerRemote_InspectImage_DigestMismatch verifies that InspectImage
+// rejects a manifest blob whose stored bytes do not hash to the descriptor
+// digest recorded in the meta (corrupt/tampered blob pool).
+func TestFileServerRemote_InspectImage_DigestMismatch(t *testing.T) {
+	t.Parallel()
+
+	m := newFSTestClient()
+	naming := fileserver.DefaultNaming{}
+	const chunkSize = 1024
+
+	configBytes := []byte(`{"architecture":"arm64"}`)
+	layerBytes := []byte("inspect-layer")
+	manifestBytes := buildManifest(t, configBytes, layerBytes)
+	manifestDgst := digest.SHA256.FromBytes(manifestBytes)
+
+	// Seed the config + layer normally, but store a CORRUPTED manifest blob
+	// under the (correct) manifest chunk name.
+	seedBlobFS(t, m, naming, configBytes)
+	seedBlobFS(t, m, naming, layerBytes)
+	corrupt := append([]byte(nil), manifestBytes...)
+	corrupt[len(corrupt)/2] ^= 0xFF
+	m.objects[naming.BlobChunk(manifestDgst, 0)] = corrupt
+
+	idxBytes := buildIndexJSON(t, manifestDgst, int64(len(manifestBytes)))
+	layoutBytes := []byte(`{"imageLayoutVersion":"1.0.0"}`)
+	meta := fileserver.ImageMeta{
+		Version:   1,
+		ChunkSize: chunkSize,
+		OciLayout: json.RawMessage(layoutBytes),
+		IndexJSON: json.RawMessage(idxBytes),
+		Descriptors: []fileserver.MetaDescriptor{
+			{Digest: manifestDgst.String(), Size: int64(len(manifestBytes))},
+			{Digest: digest.SHA256.FromBytes(configBytes).String(), Size: int64(len(configBytes))},
+			{Digest: digest.SHA256.FromBytes(layerBytes).String(), Size: int64(len(layerBytes))},
+		},
+	}
+	metaBytes, _ := fileserver.MarshalImageMeta(meta)
+	ref, _ := imageref.Parse("example.com/inspect:corrupt")
+	m.objects[naming.ImageMeta(ref)] = metaBytes
+
+	r := newFSRemoteFromCfg(m, chunkSize)
+	_, err := r.InspectImage(context.Background(), ref)
+	if !errors.Is(err, ocidir.ErrManifestDigestMismatch) {
+		t.Fatalf("expected ErrManifestDigestMismatch, got %v", err)
 	}
 }
 

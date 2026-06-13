@@ -217,6 +217,42 @@ func OpenSeekedBlob(
 // blob pool.
 var ErrMissingManifestBlob = errors.New("ocidir: manifest blob missing from blob pool")
 
+// ErrManifestDigestMismatch is returned by [ReadManifest] (and
+// [VerifyBlobBytes]) when the bytes read for a content-addressed blob do
+// not hash to the digest that named them. It signals a corrupt or
+// tampered blob pool: every downstream digest (config, layers) is taken
+// from the manifest body, so a manifest that does not match its own
+// descriptor digest cannot be trusted as the root of that closure.
+var ErrManifestDigestMismatch = errors.New("ocidir: manifest digest mismatch")
+
+// VerifyBlobBytes checks that data hashes to want, using want's own
+// algorithm via the go-digest [digest.Digest.Verifier] API. It returns
+// [ErrManifestDigestMismatch] (wrapped, with the expected digest) when
+// the content does not match, an error when want is malformed, and nil
+// when the bytes verify.
+//
+// This is the shared trust-root check for content-addressed reads: a
+// blob read by digest is only trustworthy once its bytes are confirmed
+// to hash back to that digest.
+func VerifyBlobBytes(want digest.Digest, data []byte) error {
+	if err := want.Validate(); err != nil {
+		return fmt.Errorf("ocidir: verify blob: malformed digest %q: %w", want, err)
+	}
+	v := want.Verifier()
+	if _, err := v.Write(data); err != nil {
+		return fmt.Errorf("ocidir: verify blob %s: %w", want, err)
+	}
+	if !v.Verified() {
+		return fmt.Errorf(
+			"%w: descriptor=%s actual=%s",
+			ErrManifestDigestMismatch,
+			want,
+			want.Algorithm().FromBytes(data),
+		)
+	}
+	return nil
+}
+
 // ReadManifest reads index.json from dir, resolves the (single) manifest
 // descriptor, loads the manifest blob from the dir's blob pool, parses
 // it, and returns the descriptor (size + digest + mediaType from the
@@ -257,6 +293,14 @@ func ReadManifest(ctx context.Context, dir DirV1) (v1.Descriptor, v1.Manifest, e
 			mDesc.Digest,
 			err,
 		)
+	}
+	// Verify the manifest bytes hash back to the descriptor digest before
+	// trusting any digest derived from them. The manifest is the one
+	// blindly-trusted content-addressed read in the pipeline: every
+	// downstream config/layer digest comes out of this body, so a
+	// corrupt or tampered manifest must be rejected here.
+	if err := VerifyBlobBytes(mDesc.Digest, mData); err != nil {
+		return v1.Descriptor{}, v1.Manifest{}, err
 	}
 	man, err := ParseManifest(mData)
 	if err != nil {

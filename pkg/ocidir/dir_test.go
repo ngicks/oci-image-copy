@@ -6,12 +6,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ngicks/go-fsys-helper/vroot"
 	"github.com/ngicks/go-fsys-helper/vroot/osfs"
+	"github.com/opencontainers/go-digest"
 )
 
 // osfsWrap wraps *osfs.Fs to satisfy vroot.Fs[vroot.File].
@@ -214,6 +216,130 @@ func TestReadManifest_MissingManifestBlob(t *testing.T) {
 		t.Fatalf("expected ErrMissingManifestBlob, got %v", err)
 	}
 }
+
+// TestReadManifest_DigestMismatch writes a valid index.json pointing at a
+// manifest digest, then stores a manifest blob whose bytes have one byte
+// flipped (so they no longer hash to that digest). ReadManifest must reject
+// it with ErrManifestDigestMismatch rather than silently trusting the body.
+func TestReadManifest_DigestMismatch(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	manifest := []byte(ociManifestFixtureForVerify)
+	dg := digest.SHA256.FromBytes(manifest)
+
+	// Corrupt one byte so the stored blob no longer matches its digest.
+	corrupt := append([]byte(nil), manifest...)
+	corrupt[len(corrupt)/2] ^= 0xFF
+
+	algo, hex, err := SplitDigest(dg.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobDir := filepath.Join(root, "blobs", algo)
+	if err := os.MkdirAll(blobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blobDir, hex), corrupt, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json",` +
+		`"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
+		`"digest":"` + dg.String() + `","size":` +
+		itoa(len(manifest)) + `}]}`
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte(idx), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "oci-layout"),
+		[]byte(`{"imageLayoutVersion":"1.0.0"}`),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = ReadManifest(context.Background(), NewFsDir(mustFs(t, root)))
+	if !errors.Is(err, ErrManifestDigestMismatch) {
+		t.Fatalf("expected ErrManifestDigestMismatch, got %v", err)
+	}
+}
+
+// TestReadManifest_DigestMatch is the positive control for the verify path:
+// an uncorrupted manifest blob round-trips without error.
+func TestReadManifest_DigestMatch(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	manifest := []byte(ociManifestFixtureForVerify)
+	dg := digest.SHA256.FromBytes(manifest)
+
+	algo, hex, err := SplitDigest(dg.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobDir := filepath.Join(root, "blobs", algo)
+	if err := os.MkdirAll(blobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blobDir, hex), manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json",` +
+		`"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
+		`"digest":"` + dg.String() + `","size":` +
+		itoa(len(manifest)) + `}]}`
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte(idx), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "oci-layout"),
+		[]byte(`{"imageLayoutVersion":"1.0.0"}`),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	mDesc, _, err := ReadManifest(context.Background(), NewFsDir(mustFs(t, root)))
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if mDesc.Digest != dg {
+		t.Errorf("mDesc.Digest = %q, want %q", mDesc.Digest, dg)
+	}
+}
+
+func TestVerifyBlobBytes(t *testing.T) {
+	t.Parallel()
+	data := []byte("hello blob")
+	dg := digest.SHA256.FromBytes(data)
+
+	if err := VerifyBlobBytes(dg, data); err != nil {
+		t.Errorf("VerifyBlobBytes on matching data: %v", err)
+	}
+	if err := VerifyBlobBytes(dg, []byte("hello blob!")); !errors.Is(err, ErrManifestDigestMismatch) {
+		t.Errorf("expected ErrManifestDigestMismatch on mismatch, got %v", err)
+	}
+	if err := VerifyBlobBytes(digest.Digest("not-a-digest"), data); err == nil {
+		t.Error("expected error for malformed digest")
+	}
+}
+
+// itoa is a tiny strconv.Itoa stand-in so this test file keeps its small
+// import set.
+func itoa(n int) string {
+	return strconv.Itoa(n)
+}
+
+// ociManifestFixtureForVerify is a small but valid OCI image manifest used by
+// the digest-verification tests; its exact bytes are hashed at test time.
+const ociManifestFixtureForVerify = `{"schemaVersion":2,` +
+	`"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
+	`"config":{"mediaType":"application/vnd.oci.image.config.v1+json",` +
+	`"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","size":2},` +
+	`"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip",` +
+	`"digest":"sha256:2222222222222222222222222222222222222222222222222222222222222222","size":3}]}`
 
 func TestSplitDigest(t *testing.T) {
 	t.Parallel()

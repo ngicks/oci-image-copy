@@ -506,6 +506,11 @@ func parseDumpDirRel(rel string) (imageref.ImageRef, error) {
 		if !ok || host == "" || repoPath == "" {
 			return imageref.ImageRef{}, fmt.Errorf("missing host/path in %q", rel)
 		}
+		// Defense-in-depth: a peer-controlled dump-dir name must satisfy the
+		// same host/path/tag rules Parse enforces (no `..`, no slash-in-tag).
+		if err := imageref.ValidateHostPathTag(host, repoPath, leaf); err != nil {
+			return imageref.ImageRef{}, fmt.Errorf("invalid dump dir %q: %w", rel, err)
+		}
 		ref := imageref.ImageRef{Host: host, Path: repoPath, Tag: leaf}
 		ref.Original = ref.String()
 		return ref, nil
@@ -514,6 +519,14 @@ func parseDumpDirRel(rel string) (imageref.ImageRef, error) {
 		host, repoPath, ok := strings.Cut(marker, "/")
 		if !ok || host == "" || repoPath == "" {
 			return imageref.ImageRef{}, fmt.Errorf("missing host/path in %q", rel)
+		}
+		// Validate host + path (tag empty for a digest ref); the digest hex
+		// itself is validated below.
+		if err := imageref.ValidateHostPathTag(host, repoPath, ""); err != nil {
+			return imageref.ImageRef{}, fmt.Errorf("invalid dump dir %q: %w", rel, err)
+		}
+		if err := imageref.ValidateDigestHex(leaf); err != nil {
+			return imageref.ImageRef{}, fmt.Errorf("invalid dump dir %q: %w", rel, err)
 		}
 		ref := imageref.ImageRef{Host: host, Path: repoPath, Digest: leaf}
 		ref.Original = ref.String()

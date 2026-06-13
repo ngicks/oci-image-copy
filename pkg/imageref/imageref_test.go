@@ -97,6 +97,22 @@ func TestParse(t *testing.T) {
 			wantDig:  strings.Repeat("0", 64),
 			wantStr:  "registry.example.com:5000/x@sha256:" + strings.Repeat("0", 64),
 		},
+		{
+			name:     "uppercase host lowercased and canonicalized",
+			in:       "DOCKER.IO/nginx:latest",
+			wantHost: "docker.io",
+			wantPath: "library/nginx",
+			wantTag:  "latest",
+			wantStr:  "docker.io/library/nginx:latest",
+		},
+		{
+			name:     "mixed-case registry host lowercased",
+			in:       "GHCR.io/Org/Image:Tag",
+			wantHost: "ghcr.io",
+			wantPath: "Org/Image", // path case preserved (only host is lowercased)
+			wantTag:  "Tag",
+			wantStr:  "ghcr.io/Org/Image:Tag",
+		},
 	}
 
 	for _, tc := range cases {
@@ -142,6 +158,22 @@ func TestParse_Errors(t *testing.T) {
 		{"digest missing prefix", "ghcr.io/a/b@deadbeef", `must start with "sha256:"`},
 		{"digest short hex", "ghcr.io/a/b@sha256:abc", "expected 64 hex"},
 		{"digest non-hex", "ghcr.io/a/b@sha256:" + strings.Repeat("z", 64), "non-hex"},
+		// Path traversal in path segments (defense-in-depth for the on-disk layout).
+		{"parent-dir segment", "ghcr.io/a/../b:1", "path traversal"},
+		{"dot segment", "ghcr.io/a/./b:1", "path traversal"},
+		// looksLikeHost("..") is true (contains '.'), so this parses host="..";
+		// validateHost must reject it.
+		{"traversal host", "../../x:latest", "path traversal"},
+		// Tag grammar. (Parse's own tokenizer cannot put a slash in a tag —
+		// the slash-in-tag guard is exercised on the read side via
+		// ValidateHostPathTag; see TestValidateHostPathTag.)
+		{
+			"overlong tag",
+			"ghcr.io/a/b:" + strings.Repeat("x", 129),
+			"too long",
+		},
+		{"tag bad leading char", "ghcr.io/a/b:.bad", "must start with"},
+		{"tag invalid char", "ghcr.io/a/b:good$tag", "invalid character"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,5 +185,61 @@ func TestParse_Errors(t *testing.T) {
 				t.Fatalf("Parse(%q) error = %v, want substring %q", tc.in, err, tc.want)
 			}
 		})
+	}
+}
+
+// TestValidateHostPathTag exercises the shared read-side validator that guards
+// dump-dir reconstruction against maliciously-named directories on a peer.
+func TestValidateHostPathTag(t *testing.T) {
+	t.Parallel()
+
+	ok := []struct{ host, path, tag string }{
+		{"ghcr.io", "org/image", "v1"},
+		{"docker.io", "library/nginx", ""}, // empty tag allowed (digest ref)
+		{"registry:5000", "a/b/c", "Tag-1_2.3"},
+	}
+	for _, c := range ok {
+		if err := ValidateHostPathTag(c.host, c.path, c.tag); err != nil {
+			t.Errorf("ValidateHostPathTag(%q,%q,%q) = %v, want nil", c.host, c.path, c.tag, err)
+		}
+	}
+
+	bad := []struct {
+		name            string
+		host, path, tag string
+		wantSubstr      string
+	}{
+		{"traversal host", "..", "a/b", "v1", "path traversal"},
+		{"slash host", "a/b", "x", "v1", "path separator"},
+		{"empty path", "ghcr.io", "", "v1", "missing repository path"},
+		{"traversal path segment", "ghcr.io", "a/../b", "v1", "path traversal"},
+		{"reserved path segment", "ghcr.io", "a/_tags/b", "v1", "reserved segment"},
+		{"slash in tag", "ghcr.io", "a/b", "foo/bar", "invalid character"},
+		{"overlong tag", "ghcr.io", "a/b", strings.Repeat("x", 129), "too long"},
+		{"control char in tag", "ghcr.io", "a/b", "v\x001", "invalid character"},
+	}
+	for _, c := range bad {
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateHostPathTag(c.host, c.path, c.tag)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", c.wantSubstr)
+			}
+			if !strings.Contains(err.Error(), c.wantSubstr) {
+				t.Fatalf("error = %v, want substring %q", err, c.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestValidateDigestHex(t *testing.T) {
+	t.Parallel()
+	if err := ValidateDigestHex(strings.Repeat("a", 64)); err != nil {
+		t.Errorf("valid hex rejected: %v", err)
+	}
+	if err := ValidateDigestHex("abc"); err == nil {
+		t.Error("short hex accepted")
+	}
+	if err := ValidateDigestHex(strings.Repeat("z", 64)); err == nil {
+		t.Error("non-hex accepted")
 	}
 }

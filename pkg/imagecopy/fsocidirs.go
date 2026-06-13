@@ -131,8 +131,6 @@ func (d *FsOciDirs) PutTagFile(
 		path.Join(rel, name),
 		bytes.NewReader(data),
 		os.ModePerm,
-		nil,
-		nil,
 	)
 }
 

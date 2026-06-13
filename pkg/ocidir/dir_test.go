@@ -310,6 +310,94 @@ func TestReadManifest_DigestMatch(t *testing.T) {
 	}
 }
 
+// writeDumpDir writes index.json + oci-layout (and optionally a manifest blob)
+// into a fresh temp dir and returns an FsDir over it.
+func writeDumpDir(t *testing.T, indexJSON string, manifest []byte) FsDir {
+	t.Helper()
+	root := t.TempDir()
+	if manifest != nil {
+		dg := digest.SHA256.FromBytes(manifest)
+		algo, hex, err := SplitDigest(dg.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		blobDir := filepath.Join(root, "blobs", algo)
+		if err := os.MkdirAll(blobDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(blobDir, hex), manifest, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if err := os.MkdirAll(filepath.Join(root, "blobs", "sha256"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte(indexJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "oci-layout"),
+		[]byte(`{"imageLayoutVersion":"1.0.0"}`),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	return NewFsDir(mustFs(t, root))
+}
+
+// TestReadManifest_EmptyIndex confirms an empty `manifests` array yields
+// ErrEmptyIndex rather than a Manifests[0] panic.
+func TestReadManifest_EmptyIndex(t *testing.T) {
+	t.Parallel()
+	idx := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}`
+	dir := writeDumpDir(t, idx, nil)
+	_, _, err := ReadManifest(context.Background(), dir)
+	// Empty manifests are caught by ParseIndex (ValidateIndex) at dir.Index();
+	// ReadManifest's own ErrEmptyIndex is the defense-in-depth backstop. Either
+	// way it must be an error, never a panic.
+	if err == nil {
+		t.Fatal("expected error for empty index, got nil")
+	}
+	if !strings.Contains(err.Error(), "manifests") && !errors.Is(err, ErrEmptyIndex) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestReadManifest_MultiManifest confirms a 2-entry index is rejected with
+// ErrMultiManifestIndex (single-manifest contract, decision D12).
+func TestReadManifest_MultiManifest(t *testing.T) {
+	t.Parallel()
+	idx := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[` +
+		`{"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
+		`"digest":"sha256:` + strings.Repeat("a", 64) + `","size":1},` +
+		`{"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
+		`"digest":"sha256:` + strings.Repeat("b", 64) + `","size":1}]}`
+	dir := writeDumpDir(t, idx, nil)
+	_, _, err := ReadManifest(context.Background(), dir)
+	if !errors.Is(err, ErrMultiManifestIndex) {
+		t.Fatalf("expected ErrMultiManifestIndex, got %v", err)
+	}
+}
+
+// TestReadManifest_NestedIndex confirms a single entry whose mediaType is an
+// image-index / manifest-list is rejected with ErrNestedIndex.
+func TestReadManifest_NestedIndex(t *testing.T) {
+	t.Parallel()
+	for _, mt := range []string{
+		"application/vnd.oci.image.index.v1+json",
+		MediaTypeDockerList,
+	} {
+		idx := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[` +
+			`{"mediaType":"` + mt + `","digest":"sha256:` + strings.Repeat("c", 64) + `","size":1}]}`
+		dir := writeDumpDir(t, idx, nil)
+		_, _, err := ReadManifest(context.Background(), dir)
+		if !errors.Is(err, ErrNestedIndex) {
+			t.Fatalf("mediaType %q: expected ErrNestedIndex, got %v", mt, err)
+		}
+	}
+}
+
 func TestVerifyBlobBytes(t *testing.T) {
 	t.Parallel()
 	data := []byte("hello blob")

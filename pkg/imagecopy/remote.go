@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"iter"
 	"os/exec"
@@ -21,6 +20,7 @@ import (
 	"github.com/ngicks/oci-image-copy/pkg/cli/skopeo"
 	"github.com/ngicks/oci-image-copy/pkg/cli/ssh"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
+	"github.com/ngicks/oci-image-copy/pkg/ocidir"
 	"github.com/opencontainers/go-digest"
 	"github.com/pkg/sftp"
 )
@@ -411,28 +411,14 @@ func (r *sshRemote) DumpImage(ctx context.Context, ref imageref.ImageRef) error 
 // returns the raw manifest bytes.
 func (r *sshRemote) InspectImage(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
 	if r.transport == skopeo.TransportOci {
-		// Read the raw manifest blob bytes directly from the mirror. We must
-		// return the raw bytes (not re-marshalled JSON) so the sha256 digest of
-		// the returned bytes equals the manifest digest in index.json.
-		dir := r.dirs.Image(ref)
-		idx, err := dir.Index()
+		// Read the raw, digest-verified manifest blob bytes directly from the
+		// mirror via the shared ocidir choke point. We must return the raw
+		// bytes (not re-marshalled JSON) so the sha256 digest of the returned
+		// bytes equals the manifest digest in index.json; ReadRawManifest also
+		// enforces the single-manifest contract (no unguarded Manifests[0]).
+		_, data, err := ocidir.ReadRawManifest(ctx, r.dirs.Image(ref))
 		if err != nil {
-			return nil, fmt.Errorf("remote: inspect image %s: read index: %w", ref.String(), err)
-		}
-		mDesc := idx.Manifests[0]
-		if mDesc.Digest == "" {
-			return nil, fmt.Errorf("remote: inspect image %s: index has no manifest digest",
-				ref.String())
-		}
-		rc, _, err := r.dirs.Blob(ctx, mDesc.Digest, 0)
-		if err != nil {
-			return nil, fmt.Errorf("remote: inspect image %s: read manifest blob: %w",
-				ref.String(), err)
-		}
-		defer rc.Close()
-		data, err := io.ReadAll(rc)
-		if err != nil {
-			return nil, fmt.Errorf("remote: inspect image %s: read manifest: %w", ref.String(), err)
+			return nil, fmt.Errorf("remote: inspect image %s: %w", ref.String(), err)
 		}
 		return data, nil
 	}

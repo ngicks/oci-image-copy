@@ -2,7 +2,6 @@ package ocidir
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -70,12 +69,9 @@ func (d FsDir) Index() (v1.Index, error) {
 	if err != nil {
 		return v1.Index{}, fmt.Errorf("ocidir: read index.json: %w", err)
 	}
-	var idx v1.Index
-	if err := json.Unmarshal(data, &idx); err != nil {
+	idx, err := ParseIndex(data)
+	if err != nil {
 		return v1.Index{}, fmt.Errorf("ocidir: parse index.json: %w", err)
-	}
-	if err := ValidateIndex(idx); err != nil {
-		return v1.Index{}, fmt.Errorf("ocidir: %w", err)
 	}
 	return idx, nil
 }
@@ -86,12 +82,9 @@ func (d FsDir) ImageLayout() (v1.ImageLayout, error) {
 	if err != nil {
 		return v1.ImageLayout{}, fmt.Errorf("ocidir: read %s: %w", v1.ImageLayoutFile, err)
 	}
-	var l v1.ImageLayout
-	if err := json.Unmarshal(data, &l); err != nil {
+	l, err := ParseImageLayout(data)
+	if err != nil {
 		return v1.ImageLayout{}, fmt.Errorf("ocidir: parse %s: %w", v1.ImageLayoutFile, err)
-	}
-	if err := ValidateImageLayout(l); err != nil {
-		return v1.ImageLayout{}, fmt.Errorf("ocidir: %w", err)
 	}
 	return l, nil
 }
@@ -253,18 +246,65 @@ func VerifyBlobBytes(want digest.Digest, data []byte) error {
 	return nil
 }
 
-// ReadManifest reads index.json from dir, resolves the (single) manifest
-// descriptor, loads the manifest blob from the dir's blob pool, parses
-// it, and returns the descriptor (size + digest + mediaType from the
-// index) plus the parsed manifest body.
-func ReadManifest(ctx context.Context, dir DirV1) (v1.Descriptor, v1.Manifest, error) {
+// ErrEmptyIndex is returned by [ReadManifest] when index.json has no
+// manifest entries.
+var ErrEmptyIndex = errors.New("ocidir: index.json has no manifests")
+
+// ErrMultiManifestIndex is returned by [ReadManifest] when index.json
+// lists more than one manifest. This tool implements the single-manifest
+// (no multi-arch fan-out) contract documented in the README; erroring is
+// honest, silently taking entry [0] is not (per plan 01 decision D12).
+var ErrMultiManifestIndex = errors.New(
+	"ocidir: index.json lists multiple manifests; single-manifest images only (no multi-arch)",
+)
+
+// ErrNestedIndex is returned by [ReadManifest] when the single index
+// entry is itself an image-index / manifest-list rather than an image
+// manifest. Nested indexes (a manifest-list pointed at by index.json)
+// imply multi-arch fan-out, which is unsupported.
+var ErrNestedIndex = errors.New(
+	"ocidir: index.json entry is a nested image-index/manifest-list; single image manifest only",
+)
+
+// ReadRawManifest reads index.json from dir, resolves the single manifest
+// descriptor under the single-manifest contract, loads the manifest blob
+// from the dir's blob pool, and returns the descriptor plus the verified
+// raw manifest bytes (sha256(returned bytes) == mDesc.Digest).
+//
+// It is the single index-walk + manifest-read choke point: [ReadManifest]
+// parses on top of it, and the InspectImage paths (which must return the
+// raw bytes so digest math over them holds) use it directly instead of
+// re-implementing the walk.
+//
+// The single-manifest contract is enforced explicitly: an empty index
+// ([ErrEmptyIndex]), a multi-manifest index ([ErrMultiManifestIndex]),
+// or a single entry whose mediaType is an image-index / manifest-list
+// ([ErrNestedIndex]) are all rejected rather than silently resolving to
+// `Manifests[0]`. Multi-arch fan-out is not supported (see the README).
+func ReadRawManifest(ctx context.Context, dir DirV1) (v1.Descriptor, []byte, error) {
 	idx, err := dir.Index()
 	if err != nil {
-		return v1.Descriptor{}, v1.Manifest{}, err
+		return v1.Descriptor{}, nil, err
+	}
+	switch len(idx.Manifests) {
+	case 0:
+		return v1.Descriptor{}, nil, ErrEmptyIndex
+	case 1:
+		// ok
+	default:
+		return v1.Descriptor{}, nil, fmt.Errorf(
+			"%w: found %d", ErrMultiManifestIndex, len(idx.Manifests),
+		)
 	}
 	mDesc := idx.Manifests[0]
+	switch mDesc.MediaType {
+	case v1.MediaTypeImageIndex, MediaTypeDockerList:
+		return v1.Descriptor{}, nil, fmt.Errorf(
+			"%w: mediaType=%s", ErrNestedIndex, mDesc.MediaType,
+		)
+	}
 	if mDesc.Digest == "" {
-		return v1.Descriptor{}, v1.Manifest{}, errors.New(
+		return v1.Descriptor{}, nil, errors.New(
 			"ocidir: index.json manifest has no digest",
 		)
 	}
@@ -272,13 +312,13 @@ func ReadManifest(ctx context.Context, dir DirV1) (v1.Descriptor, v1.Manifest, e
 	rc, _, err := dir.Blob(ctx, mDesc.Digest, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf(
+			return v1.Descriptor{}, nil, fmt.Errorf(
 				"%w: digest=%s",
 				ErrMissingManifestBlob,
 				mDesc.Digest,
 			)
 		}
-		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf(
+		return v1.Descriptor{}, nil, fmt.Errorf(
 			"ocidir: read manifest blob %s: %w",
 			mDesc.Digest,
 			err,
@@ -288,7 +328,7 @@ func ReadManifest(ctx context.Context, dir DirV1) (v1.Descriptor, v1.Manifest, e
 
 	mData, err := io.ReadAll(rc)
 	if err != nil {
-		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf(
+		return v1.Descriptor{}, nil, fmt.Errorf(
 			"ocidir: read manifest blob %s: %w",
 			mDesc.Digest,
 			err,
@@ -300,6 +340,19 @@ func ReadManifest(ctx context.Context, dir DirV1) (v1.Descriptor, v1.Manifest, e
 	// downstream config/layer digest comes out of this body, so a
 	// corrupt or tampered manifest must be rejected here.
 	if err := VerifyBlobBytes(mDesc.Digest, mData); err != nil {
+		return v1.Descriptor{}, nil, err
+	}
+	return mDesc, mData, nil
+}
+
+// ReadManifest reads index.json from dir, resolves the single manifest
+// descriptor, loads the manifest blob from the dir's blob pool, verifies
+// and parses it, and returns the descriptor (size + digest + mediaType
+// from the index) plus the parsed manifest body. See [ReadRawManifest]
+// for the single-manifest-contract semantics it shares.
+func ReadManifest(ctx context.Context, dir DirV1) (v1.Descriptor, v1.Manifest, error) {
+	mDesc, mData, err := ReadRawManifest(ctx, dir)
+	if err != nil {
 		return v1.Descriptor{}, v1.Manifest{}, err
 	}
 	man, err := ParseManifest(mData)

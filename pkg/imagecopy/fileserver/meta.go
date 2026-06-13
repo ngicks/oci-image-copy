@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ngicks/oci-image-copy/pkg/ocidir"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -83,19 +84,26 @@ func validateImageMeta(m ImageMeta) error {
 	return nil
 }
 
-// ParsedImageLayout parses the verbatim OciLayout bytes into a v1.ImageLayout.
+// ParsedImageLayout parses the verbatim OciLayout bytes into a
+// v1.ImageLayout, routed through [ocidir.ParseImageLayout] so the
+// structural contract is validated at the same choke point as on-disk
+// oci-layout reads.
 func (m ImageMeta) ParsedImageLayout() (v1.ImageLayout, error) {
-	var l v1.ImageLayout
-	if err := json.Unmarshal(m.OciLayout, &l); err != nil {
+	l, err := ocidir.ParseImageLayout(m.OciLayout)
+	if err != nil {
 		return v1.ImageLayout{}, fmt.Errorf("fileserver meta: parse ociLayout: %w", err)
 	}
 	return l, nil
 }
 
-// ParsedIndex parses the verbatim IndexJSON bytes into a v1.Index.
+// ParsedIndex parses the verbatim IndexJSON bytes into a v1.Index, routed
+// through [ocidir.ParseIndex] so the non-empty-manifests contract is
+// validated at the same choke point as on-disk index reads (a peer
+// serving `{"manifests":[]}` is rejected here, not at a later
+// `Manifests[0]` panic).
 func (m ImageMeta) ParsedIndex() (v1.Index, error) {
-	var idx v1.Index
-	if err := json.Unmarshal(m.IndexJSON, &idx); err != nil {
+	idx, err := ocidir.ParseIndex(m.IndexJSON)
+	if err != nil {
 		return v1.Index{}, fmt.Errorf("fileserver meta: parse indexJSON: %w", err)
 	}
 	return idx, nil

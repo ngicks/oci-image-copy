@@ -64,6 +64,47 @@ func ParseManifest(data []byte) (v1.Manifest, error) {
 	return m, nil
 }
 
+// ParseIndex decodes an `index.json` document into a [v1.Index] and
+// validates it via [ValidateIndex]. It is the single unmarshal+validate
+// choke point for index reads — every [DirV1.Index] implementation routes
+// through it so the structural contract is enforced in exactly one place.
+//
+// It does NOT enforce the single-manifest contract: a well-formed index
+// with several manifests is still a valid index. The single-manifest
+// restriction is a property of how *this tool* consumes an index and is
+// enforced at consumption time by [ReadManifest], not here.
+func ParseIndex(data []byte) (v1.Index, error) {
+	if len(data) == 0 {
+		return v1.Index{}, errors.New("index: empty input")
+	}
+	var idx v1.Index
+	if err := json.Unmarshal(data, &idx); err != nil {
+		return v1.Index{}, fmt.Errorf("index: %w", err)
+	}
+	if err := ValidateIndex(idx); err != nil {
+		return v1.Index{}, err
+	}
+	return idx, nil
+}
+
+// ParseImageLayout decodes an `oci-layout` document into a
+// [v1.ImageLayout] and validates it via [ValidateImageLayout]. Mirrors
+// [ParseIndex] as the single unmarshal+validate choke point for
+// oci-layout reads.
+func ParseImageLayout(data []byte) (v1.ImageLayout, error) {
+	if len(data) == 0 {
+		return v1.ImageLayout{}, errors.New("layout: empty input")
+	}
+	var l v1.ImageLayout
+	if err := json.Unmarshal(data, &l); err != nil {
+		return v1.ImageLayout{}, fmt.Errorf("layout: %w", err)
+	}
+	if err := ValidateImageLayout(l); err != nil {
+		return v1.ImageLayout{}, err
+	}
+	return l, nil
+}
+
 // ValidateIndex enforces the structural invariants we rely on: a
 // non-empty `manifests` array. JSON decoding is the caller's job.
 func ValidateIndex(idx v1.Index) error {

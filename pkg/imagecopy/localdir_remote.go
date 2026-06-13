@@ -24,11 +24,11 @@ package imagecopy
 import (
 	"context"
 	"fmt"
-	"io"
 	"iter"
 
 	"github.com/ngicks/go-fsys-helper/vroot"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
+	"github.com/ngicks/oci-image-copy/pkg/ocidir"
 	"github.com/opencontainers/go-digest"
 )
 
@@ -99,38 +99,12 @@ func (r *localDirRemote) DumpImage(_ context.Context, _ imageref.ImageRef) error
 // the exact bytes. This mirrors the sshRemote oci-transport branch so that
 // sha256(returned bytes) == manifest digest in index.json.
 func (r *localDirRemote) InspectImage(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
-	dir := r.dirs.Image(ref)
-	idx, err := dir.Index()
+	// Read the raw, digest-verified manifest bytes via the shared ocidir
+	// choke point: it enforces the single-manifest contract (no unguarded
+	// Manifests[0]) and guarantees sha256(returned bytes) == manifest digest.
+	_, data, err := ocidir.ReadRawManifest(ctx, r.dirs.Image(ref))
 	if err != nil {
-		return nil, fmt.Errorf("local-dir remote: inspect %s: read index: %w", ref.String(), err)
-	}
-	if len(idx.Manifests) == 0 {
-		return nil, fmt.Errorf(
-			"local-dir remote: inspect %s: index has no manifests",
-			ref.String(),
-		)
-	}
-	mDesc := idx.Manifests[0]
-	if mDesc.Digest == "" {
-		return nil, fmt.Errorf(
-			"local-dir remote: inspect %s: index has no manifest digest",
-			ref.String(),
-		)
-	}
-	rc, _, err := r.dirs.Blob(ctx, mDesc.Digest, 0)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"local-dir remote: inspect %s: read manifest blob: %w",
-			ref.String(), err,
-		)
-	}
-	defer rc.Close()
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"local-dir remote: inspect %s: read manifest: %w",
-			ref.String(), err,
-		)
+		return nil, fmt.Errorf("local-dir remote: inspect %s: %w", ref.String(), err)
 	}
 	return data, nil
 }

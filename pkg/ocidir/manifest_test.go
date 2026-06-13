@@ -116,6 +116,66 @@ func TestValidateIndex_Empty(t *testing.T) {
 	}
 }
 
+func TestParseIndex_OK(t *testing.T) {
+	t.Parallel()
+	idx, err := ParseIndex([]byte(ociIndexFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Manifests) != 1 {
+		t.Errorf("got %d manifests, want 1", len(idx.Manifests))
+	}
+}
+
+func TestParseIndex_Errors(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty input", "", "empty input"},
+		{"malformed json", "{not json", "index:"},
+		{
+			"empty manifests",
+			`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}`,
+			"empty .manifests",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseIndex([]byte(tc.in))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseImageLayout_OK(t *testing.T) {
+	t.Parallel()
+	l, err := ParseImageLayout([]byte(`{"imageLayoutVersion":"1.0.0"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Version != "1.0.0" {
+		t.Errorf("Version = %q, want 1.0.0", l.Version)
+	}
+}
+
+func TestParseImageLayout_Errors(t *testing.T) {
+	t.Parallel()
+	if _, err := ParseImageLayout(nil); err == nil {
+		t.Error("expected error for empty input")
+	}
+	if _, err := ParseImageLayout([]byte(`{}`)); err == nil {
+		t.Error("expected error for missing imageLayoutVersion")
+	}
+}
+
 func TestValidateImageLayout_MissingVersion(t *testing.T) {
 	t.Parallel()
 	if err := ValidateImageLayout(v1.ImageLayout{}); err == nil {

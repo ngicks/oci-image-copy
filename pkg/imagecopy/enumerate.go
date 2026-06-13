@@ -2,7 +2,6 @@ package imagecopy
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -236,12 +235,9 @@ func (d sharedDir) Index() (v1.Index, error) {
 	if err != nil {
 		return v1.Index{}, fmt.Errorf("ocidir: read index.json: %w", err)
 	}
-	var idx v1.Index
-	if err := json.Unmarshal(data, &idx); err != nil {
+	idx, err := ocidir.ParseIndex(data)
+	if err != nil {
 		return v1.Index{}, fmt.Errorf("ocidir: parse index.json: %w", err)
-	}
-	if err := ocidir.ValidateIndex(idx); err != nil {
-		return v1.Index{}, fmt.Errorf("ocidir: %w", err)
 	}
 	return idx, nil
 }
@@ -251,12 +247,9 @@ func (d sharedDir) ImageLayout() (v1.ImageLayout, error) {
 	if err != nil {
 		return v1.ImageLayout{}, fmt.Errorf("ocidir: read %s: %w", v1.ImageLayoutFile, err)
 	}
-	var l v1.ImageLayout
-	if err := json.Unmarshal(data, &l); err != nil {
+	l, err := ocidir.ParseImageLayout(data)
+	if err != nil {
 		return v1.ImageLayout{}, fmt.Errorf("ocidir: parse %s: %w", v1.ImageLayoutFile, err)
-	}
-	if err := ocidir.ValidateImageLayout(l); err != nil {
-		return v1.ImageLayout{}, fmt.Errorf("ocidir: %w", err)
 	}
 	return l, nil
 }

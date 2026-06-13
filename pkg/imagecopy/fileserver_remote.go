@@ -442,16 +442,12 @@ func (r *fileServerRemote) commitImageMeta(
 	ref imageref.ImageRef,
 	state *fsTagFileState,
 ) error {
-	// Parse index.json to locate the manifest descriptor.
-	var idx v1.Index
-	if err := json.Unmarshal(state.indexJSON, &idx); err != nil {
+	// Parse index.json (unmarshal + validate) via the shared choke point to
+	// locate the manifest descriptor.
+	idx, err := ocidir.ParseIndex(state.indexJSON)
+	if err != nil {
 		return fmt.Errorf(
 			"file-server commit meta %s: parse index.json: %w", ref.String(), err,
-		)
-	}
-	if len(idx.Manifests) == 0 {
-		return fmt.Errorf(
-			"file-server commit meta %s: index.json has no manifests", ref.String(),
 		)
 	}
 	mDesc := idx.Manifests[0]

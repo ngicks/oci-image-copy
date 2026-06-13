@@ -98,6 +98,27 @@ func TestUnmarshalImageMeta_ZeroChunkSize(t *testing.T) {
 	}
 }
 
+// TestParsedIndex_EmptyManifests verifies that a meta whose index.json has an
+// empty manifests array is rejected by ParsedIndex (routed through
+// ocidir.ParseIndex), so a peer serving `{"manifests":[]}` produces an error
+// rather than a downstream Manifests[0] panic.
+func TestParsedIndex_EmptyManifests(t *testing.T) {
+	t.Parallel()
+
+	emptyIdx := []byte(
+		`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}`,
+	)
+	meta := fileserver.ImageMeta{
+		Version:   1,
+		ChunkSize: 1024,
+		OciLayout: json.RawMessage(verbatimOciLayout),
+		IndexJSON: json.RawMessage(emptyIdx),
+	}
+	if _, err := meta.ParsedIndex(); err == nil {
+		t.Fatal("expected error from ParsedIndex for empty manifests, got nil")
+	}
+}
+
 func TestDescriptorsFromManifest(t *testing.T) {
 	t.Parallel()
 

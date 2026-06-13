@@ -6,7 +6,11 @@
 // [DefaultNaming] produces:
 //
 //	meta:  <prefix>/images/<host>/<repo-path>/_tags/<tag>.json
-//	chunk: <prefix>/blobs/sha256/<hex>/<08d index>
+//	chunk: <prefix>/blobs/<algo>/<hex>/<08d index>
+//
+// The chunk key carries the digest algorithm segment (<algo>, e.g. "sha256")
+// so addresses cannot collide across algorithms (decision D13). This is a wire-
+// format change accepted pre-1.0: it invalidates existing fileserver stores.
 //
 // The per-image metadata object is written LAST as the commit marker:
 // a crash mid-push leaves at worst orphan chunks, never a metadata
@@ -37,7 +41,7 @@ type NamingConvention interface {
 //
 // Object names:
 //   - meta:  <Prefix>/images/<host>/<repo-path>/_tags/<tag>.json
-//   - chunk: <Prefix>/blobs/sha256/<hex>/<08d index>
+//   - chunk: <Prefix>/blobs/<algo>/<hex>/<08d index>
 //
 // When Prefix is empty no leading slash or separator is added.
 type DefaultNaming struct {
@@ -69,10 +73,13 @@ func (n DefaultNaming) ImageMeta(ref imageref.ImageRef) string {
 //
 // The name format is:
 //
-//	<prefix>/blobs/sha256/<hex>/<08d index>
+//	<prefix>/blobs/<algo>/<hex>/<08d index>
+//
+// The digest algorithm segment (e.g. "sha256") is included so that two blobs
+// with the same hex under different algorithms cannot collide (decision D13).
 func (n DefaultNaming) BlobChunk(dgst digest.Digest, index int) string {
-	_, hex := splitDigestParts(dgst)
-	suffix := fmt.Sprintf("blobs/sha256/%s/%08d", hex, index)
+	algo, hex := splitDigestParts(dgst)
+	suffix := fmt.Sprintf("blobs/%s/%s/%08d", algo, hex, index)
 	return n.join(suffix)
 }
 

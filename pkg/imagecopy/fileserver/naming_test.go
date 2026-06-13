@@ -108,3 +108,22 @@ func TestDefaultNaming_BlobChunk(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultNaming_BlobChunk_AlgorithmSegment verifies the chunk key carries
+// the digest's actual algorithm (decision D13), not a hardcoded "sha256". A
+// sha512 digest must land under blobs/sha512/, so it cannot collide with a
+// sha256 digest that happens to share the hex prefix.
+func TestDefaultNaming_BlobChunk_AlgorithmSegment(t *testing.T) {
+	t.Parallel()
+
+	hex512 := "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce" +
+		"47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
+	dgst := digest.Digest("sha512:" + hex512)
+
+	n := fileserver.DefaultNaming{}
+	got := n.BlobChunk(dgst, 0)
+	want := "blobs/sha512/" + hex512 + "/00000000"
+	if got != want {
+		t.Errorf("BlobChunk(sha512) = %q, want %q", got, want)
+	}
+}

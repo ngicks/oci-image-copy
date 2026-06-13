@@ -157,6 +157,18 @@ Specifies the remote peer. Accepted forms:
 | `--remote-naming-prefix` | `""` | Naming convention prefix for file-server blobs. |
 | `OCI_IMAGE_COPY_FILESERVER_AUTH` env var | | Sets the `Authorization` header value (e.g. `Bearer <token>`). An explicit `--remote-header 'Authorization: ...'` flag takes precedence. The value is never logged. |
 
+**Push trusts remote chunk integrity by size.** On push, a blob is considered
+already present on the file server when every expected chunk object exists with
+the expected byte length (a per-chunk `HEAD` / `Content-Length` check); the
+chunk *contents* are not re-hashed. A right-sized but wrong-content remote chunk
+is therefore not re-uploaded. (Pull has a whole-blob sha256 backstop; push does
+not.) Chunk object keys include the digest algorithm segment
+(`blobs/<algo>/<hex>/<index>`), so addresses cannot collide across algorithms.
+A failed presence probe — transport error, auth (401/403), or server error
+(5xx) — is propagated, never read as "absent": it will not silently downgrade
+into "the remote has nothing, send everything". A content-verifying push flag is
+not yet implemented (a feature, deferred — see the plan's decision D14).
+
 ### `push IMAGE [IMAGE...]`
 
 Push images from the local transport to the remote peer.

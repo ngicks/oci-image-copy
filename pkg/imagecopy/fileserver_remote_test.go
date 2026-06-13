@@ -780,6 +780,121 @@ func TestFileServerRemote_PrimeRefs(t *testing.T) {
 	}
 }
 
+// errClient is a fsfileserver.Client whose Get/Stat always fail with a fixed
+// non-ErrNotExist error, modelling a transport / auth (401/403) / server (5xx)
+// failure rather than an absent object.
+type errClient struct{ err error }
+
+func (c *errClient) Get(
+	_ context.Context, _ string, _ int64,
+) (io.ReadCloser, int64, error) {
+	return nil, 0, c.err
+}
+
+func (c *errClient) Stat(_ context.Context, _ string) (int64, error) {
+	return 0, c.err
+}
+
+func (c *errClient) Put(_ context.Context, _ string, _ int64, _ io.Reader) error {
+	return c.err
+}
+
+var _ fsfileserver.Client = (*errClient)(nil)
+
+// TestFileServerRemote_PrimeRefs_PropagatesTransportError verifies that a
+// non-ErrNotExist error fetching the meta (e.g. 401/5xx) is propagated by
+// PrimeRefs rather than silently read as "absent" (decision D14): swallowing it
+// would downgrade a failed probe into "remote has nothing, send everything".
+func TestFileServerRemote_PrimeRefs_PropagatesTransportError(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("HTTP 503 service unavailable")
+	r := NewFileServerRemote(FileServerConfig{
+		Client: &errClient{err: boom},
+		Naming: fileserver.DefaultNaming{},
+	}).(*fileServerRemote)
+
+	ref, _ := imageref.Parse("example.com/probe:v1")
+	err := r.PrimeRefs(context.Background(), []imageref.ImageRef{ref})
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected transport error propagated, got %v", err)
+	}
+}
+
+// TestFileServerRemote_PrimeRefs_AbsentIsSilent verifies that an absent meta
+// (fs.ErrNotExist, e.g. a first push) is NOT an error.
+func TestFileServerRemote_PrimeRefs_AbsentIsSilent(t *testing.T) {
+	t.Parallel()
+	r := newFSRemoteFromCfg(newFSTestClient(), 1024)
+	ref, _ := imageref.Parse("example.com/absent:v1")
+	if err := r.PrimeRefs(context.Background(), []imageref.ImageRef{ref}); err != nil {
+		t.Fatalf("absent meta should be silent, got %v", err)
+	}
+}
+
+// TestFileServerRemote_ProbeBlob_PropagatesTransportError verifies that a
+// transport error from the State probe is surfaced, not treated as incomplete.
+func TestFileServerRemote_ProbeBlob_PropagatesTransportError(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("HTTP 401 unauthorized")
+	r := NewFileServerRemote(FileServerConfig{
+		Client: &errClient{err: boom},
+		Naming: fileserver.DefaultNaming{},
+	}).(*fileServerRemote)
+
+	dgst := digest.SHA256.FromBytes([]byte("x"))
+	_, err := r.ProbeBlob(context.Background(), dgst, 10)
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected transport error propagated, got %v", err)
+	}
+}
+
+// TestFileServerRemote_Blob_MultiChunkUnsupported verifies the meta-less Blob
+// accessor refuses a multi-chunk blob with ErrMultiChunkBlobUnsupported instead
+// of silently returning only chunk 0.
+func TestFileServerRemote_Blob_MultiChunkUnsupported(t *testing.T) {
+	t.Parallel()
+
+	m := newFSTestClient()
+	naming := fileserver.DefaultNaming{}
+	const chunkSize = 4
+	blobData := []byte("abcdefgh") // 8 bytes -> 2 chunks of 4
+	dgst := seedBlobChunked(t, m, naming, blobData, chunkSize)
+
+	r := newFSRemoteFromCfg(m, chunkSize)
+	_, _, err := r.Blob(context.Background(), dgst, 0)
+	if !errors.Is(err, ErrMultiChunkBlobUnsupported) {
+		t.Fatalf("expected ErrMultiChunkBlobUnsupported, got %v", err)
+	}
+}
+
+// TestFileServerRemote_Blob_SingleChunkOK verifies the meta-less Blob accessor
+// still serves a single-chunk blob.
+func TestFileServerRemote_Blob_SingleChunkOK(t *testing.T) {
+	t.Parallel()
+
+	m := newFSTestClient()
+	naming := fileserver.DefaultNaming{}
+	blobData := []byte("short") // fits one chunk
+	seedBlobFS(t, m, naming, blobData)
+	dgst := digest.SHA256.FromBytes(blobData)
+
+	r := newFSRemoteFromCfg(m, 1024)
+	rc, total, err := r.Blob(context.Background(), dgst, 0)
+	if err != nil {
+		t.Fatalf("Blob: %v", err)
+	}
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	if !bytes.Equal(got, blobData) {
+		t.Errorf("Blob content = %q, want %q", got, blobData)
+	}
+	if total != int64(len(blobData)) {
+		t.Errorf("Blob total = %d, want %d", total, len(blobData))
+	}
+}
+
 // TestFileServerRemote_ProbeBlob verifies ProbeBlob returns true when all
 // blob chunks are present on the server, and false when a chunk is missing.
 func TestFileServerRemote_ProbeBlob(t *testing.T) {

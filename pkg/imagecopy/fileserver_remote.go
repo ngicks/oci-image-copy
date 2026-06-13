@@ -314,17 +314,40 @@ func (r *fileServerRemote) getImageMeta(
 
 // --- OciDirs interface ---
 
+// ErrMultiChunkBlobUnsupported is returned by [fileServerRemote.Blob] when the
+// blob spans more than one chunk. The meta-less top-level Blob accessor only
+// reads chunk 0; rather than silently truncating a multi-chunk blob to its
+// first chunk (a latent landmine — callers comparing against the descriptor
+// size would see a short read), it errors explicitly. Callers that need a
+// multi-chunk blob have the size and must use BlobSource / the meta-backed
+// DirV1.Blob instead.
+var ErrMultiChunkBlobUnsupported = errors.New(
+	"file-server: meta-less Blob accessor cannot serve a multi-chunk blob; use BlobSource",
+)
+
 // Blob implements [OciDirs]. Reads chunk 0 directly for size detection.
 // This method is primarily used by InspectImage's fallback and ocidir.ReadManifest.
+//
+// Without a meta the total size is unknown up front, so this accessor can only
+// honestly serve single-chunk blobs. If a second chunk exists, the blob is
+// multi-chunk and the call fails with [ErrMultiChunkBlobUnsupported] instead of
+// returning only chunk 0 while claiming the full size.
 func (r *fileServerRemote) Blob(
 	ctx context.Context,
 	dgst digest.Digest,
 	offset int64,
 ) (io.ReadCloser, int64, error) {
-	// Without a meta we don't know the total size up front.
-	// Read chunk 0 which gives us the chunk size; from there we need the
-	// total. This is a best-effort fallback — callers that know the size
-	// should use BlobSource instead.
+	// A second chunk means the blob is multi-chunk: refuse rather than
+	// truncate. (chunk-0-only reads are otherwise indistinguishable from a
+	// complete short blob.)
+	if _, err := r.client.Stat(ctx, r.naming.BlobChunk(dgst, 1)); err == nil {
+		return nil, 0, fmt.Errorf("%w: digest=%s", ErrMultiChunkBlobUnsupported, dgst)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		// A transport/auth/server error probing chunk 1 must not be swallowed
+		// as "single-chunk"; surface it.
+		return nil, 0, fmt.Errorf("file-server Blob %s probe chunk1: %w", dgst, err)
+	}
+
 	name := r.naming.BlobChunk(dgst, 0)
 	rc, total, err := r.client.Get(ctx, name, offset)
 	if err != nil {
@@ -660,9 +683,15 @@ var _ RefPrimer = (*fileServerRemote)(nil)
 var _ BlobProber = (*fileServerRemote)(nil)
 
 // PrimeRefs implements [RefPrimer].
-// For each ref, fetches the image meta (absent refs are silently skipped).
-// This loads chunkSize information into blobsFromMeta for use by BlobSource
-// and ProbeBlob.
+//
+// For each ref it fetches the image meta to load chunkSize information into
+// blobsFromMeta for use by BlobSource and ProbeBlob.
+//
+// Error taxonomy (decision D14): an absent meta ([fs.ErrNotExist], e.g. a 404
+// for a first push) is normal and skipped silently. Any other error —
+// transport failure, auth (401/403), server error (5xx) — is propagated: those
+// must NOT be read as "absent", because doing so would silently downgrade a
+// failed inventory probe into "the remote has nothing, send everything".
 func (r *fileServerRemote) PrimeRefs(ctx context.Context, refs []imageref.ImageRef) error {
 	for _, ref := range refs {
 		if _, err := r.getImageMeta(ctx, ref); err != nil {
@@ -670,8 +699,9 @@ func (r *fileServerRemote) PrimeRefs(ctx context.Context, refs []imageref.ImageR
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			// Other errors are also non-fatal: best-effort priming.
-			continue
+			// Transport/auth/server errors are NOT "absent": surface them so
+			// the caller does not mistake a failed probe for an empty remote.
+			return fmt.Errorf("file-server prime %s: %w", ref.String(), err)
 		}
 	}
 	return nil

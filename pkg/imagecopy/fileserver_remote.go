@@ -123,8 +123,11 @@ func NewFileServerRemoteFromSpec(spec *FileServerRemoteSpec) (Remote, error) {
 	for _, h := range spec.Headers {
 		name, val, ok := splitHeaderPair(h)
 		if !ok {
+			// Redact the value: a malformed header may still carry a secret
+			// (e.g. a bare token with no name), so never echo it verbatim.
 			return nil, fmt.Errorf(
-				"file-server: invalid header %q (expected 'Name: value')", h,
+				"file-server: invalid header %q (expected 'Name: value')",
+				RedactHeader(h),
 			)
 		}
 		hdr.Add(name, val)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/ngicks/oci-image-copy/pkg/cli"
 )
@@ -12,31 +11,15 @@ import (
 // Podman is a typed wrapper over the podman CLI. Podman is largely
 // docker-compatible but `podman image ls --format json` returns a
 // JSON array (not NDJSON like docker) and uses Names[] for refs
-// instead of Repository/Tag — hence a separate type.
+// instead of Repository/Tag — hence a separate type. It embeds [cli.Tool]
+// for the shared Invoker / Exe / Version plumbing.
 type Podman struct {
-	Invoker cli.Invoker
-	// Exe is the podman executable name (or path). Empty defaults to
-	// "podman".
-	Exe string
+	cli.Tool
 }
 
-// NewPodman returns a [Podman] driving inv.
-func NewPodman(inv cli.Invoker) *Podman { return &Podman{Invoker: inv} }
-
-func (p *Podman) exe() string {
-	if p.Exe == "" {
-		return "podman"
-	}
-	return p.Exe
-}
-
-// Version returns the trimmed `podman --version` output.
-func (p *Podman) Version(ctx context.Context) (string, error) {
-	out, err := p.Invoker.Command(ctx, p.exe(), "--version").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
+// NewPodman returns a [Podman] driving inv (executable "podman").
+func NewPodman(inv cli.Invoker) *Podman {
+	return &Podman{Tool: cli.Tool{Invoker: inv, DefaultExe: "podman"}}
 }
 
 // podmanImage is the subset of `podman image ls --format json` we
@@ -52,7 +35,7 @@ type podmanImage struct {
 // Output of `podman image ls --format json` is a JSON array; refs
 // come from each image's Names list (RepoTag-style).
 func (p *Podman) ImageLs(ctx context.Context) ([]string, error) {
-	out, err := p.Invoker.Command(ctx, p.exe(), "image", "ls", "--format", "json").Output()
+	out, err := p.Output(ctx, "image", "ls", "--format", "json")
 	if err != nil {
 		return nil, err
 	}

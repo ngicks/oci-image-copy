@@ -7,7 +7,7 @@
 | O3 | ssh cancellation/BatchMode + Output dedup | done | - |
 | O4 | chunk-name algorithm + probe error taxonomy | done | - |
 | O5 | imageref host/path/tag validation | done | - |
-| O6 | cli wrapper dedup + shellQuote tests + header redaction | planned | - |
+| O6 | cli wrapper dedup + shellQuote tests + header redaction | done | - |
 
 Baseline: all module tests green (2026-06-13).
 Per-entry summaries: `SUMMARY-<entry>.md` in this directory.

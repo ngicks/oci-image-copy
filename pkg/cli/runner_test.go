@@ -170,3 +170,41 @@ func TestTailBytes(t *testing.T) {
 		t.Errorf("tail mismatch: %q", got)
 	}
 }
+
+// TestShellQuote is a table test for the remote-argv escaper that every wrapper
+// depends on. Each token must be single-quoted so the remote `sh -c` treats it
+// as one literal word with all meta-characters inert (the literal-argv
+// guarantee). A literal single quote becomes the canonical `'\”` close-reopen
+// sequence.
+func TestShellQuote(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"empty argv", nil, ""},
+		{"empty token", []string{""}, `''`},
+		{"simple", []string{"skopeo", "inspect"}, `'skopeo' 'inspect'`},
+		{"command substitution", []string{"$(rm -rf /)"}, `'$(rm -rf /)'`},
+		{"semicolon", []string{"a;b"}, `'a;b'`},
+		{"space in token", []string{"a b"}, `'a b'`},
+		{"newline in token", []string{"a\nb"}, "'a\nb'"},
+		{"glob star", []string{"*.tar"}, `'*.tar'`},
+		{"single quote", []string{"a'b"}, `'a'\''b'`},
+		{"pipe and ampersand", []string{"a|b&c"}, `'a|b&c'`},
+		{
+			"multi token with specials",
+			[]string{"sh", "-c", "echo $HOME"},
+			`'sh' '-c' 'echo $HOME'`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := shellQuote(tc.in); got != tc.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

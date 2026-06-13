@@ -235,9 +235,17 @@ func (c *sshCmd) Run() error {
 }
 
 // shellQuote builds a single sh-safe word from argv. Each token is
-// single-quoted so meta-characters (`'$|;&`) are inert; the whole
-// string is fed to ssh as one argument so the remote sshd hands it to
-// `sh -c`.
+// single-quoted so meta-characters (`'$|;&`, spaces, newlines, globs) are
+// inert; the whole string is fed to ssh as one argument so the remote sshd
+// hands it to `sh -c`.
+//
+// Literal-argv guarantee: the remote `sh -c` receives every argv token exactly
+// as passed, as one literal word each — no token can be split, expanded
+// (`$VAR`, `$(...)`), globbed (`*`), or used to terminate the command (`;`,
+// `|`, `&`). A literal single quote is encoded as the canonical close-reopen
+// sequence `'\”`. This is the security boundary every wrapper relies on when
+// forwarding user-supplied refs/paths to a remote skopeo, and is covered by
+// TestShellQuote.
 func shellQuote(argv []string) string {
 	var b strings.Builder
 	for i, a := range argv {

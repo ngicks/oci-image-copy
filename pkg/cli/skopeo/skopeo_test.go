@@ -36,7 +36,7 @@ func (r *stubInvoker) Command(_ context.Context, exe string, args ...string) cli
 }
 
 func newSkopeo(r *stubInvoker) *Skopeo {
-	return &Skopeo{Invoker: r}
+	return NewSkopeo(r)
 }
 
 func TestSkopeo_Version_TrimsOutput(t *testing.T) {

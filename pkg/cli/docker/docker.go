@@ -12,36 +12,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/ngicks/oci-image-copy/pkg/cli"
 )
 
-// Docker is a typed wrapper over the docker CLI.
+// Docker is a typed wrapper over the docker CLI. It embeds [cli.Tool] for the
+// shared Invoker / Exe / Version plumbing and adds the docker-specific methods.
 type Docker struct {
-	Invoker cli.Invoker
-	// Exe is the docker executable name (or path). Empty defaults to
-	// "docker".
-	Exe string
+	cli.Tool
 }
 
-// NewDocker returns a [Docker] driving inv.
-func NewDocker(inv cli.Invoker) *Docker { return &Docker{Invoker: inv} }
-
-func (d *Docker) exe() string {
-	if d.Exe == "" {
-		return "docker"
-	}
-	return d.Exe
-}
-
-// Version returns the trimmed `docker --version` output.
-func (d *Docker) Version(ctx context.Context) (string, error) {
-	out, err := d.Invoker.Command(ctx, d.exe(), "--version").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
+// NewDocker returns a [Docker] driving inv (executable "docker").
+func NewDocker(inv cli.Invoker) *Docker {
+	return &Docker{Tool: cli.Tool{Invoker: inv, DefaultExe: "docker"}}
 }
 
 // dockerImage is the subset of `docker image ls --format json` (NDJSON)
@@ -65,7 +48,7 @@ type dockerInspectImage struct {
 // reconstructed as <Repository>:<Tag>; entries with `<none>`
 // repo/tag (Docker's marker for dangling images) are skipped.
 func (d *Docker) ImageLs(ctx context.Context) ([]string, error) {
-	out, err := d.Invoker.Command(ctx, d.exe(), "image", "ls", "--format", "json").Output()
+	out, err := d.Output(ctx, "image", "ls", "--format", "json")
 	if err != nil {
 		return nil, err
 	}

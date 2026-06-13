@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"testing"
 
 	fsfileserver "github.com/ngicks/go-fsys-helper/stream/fileserver"
@@ -777,6 +778,30 @@ func TestFileServerRemote_PrimeRefs(t *testing.T) {
 	}
 	if info.size != int64(len(blobData)) {
 		t.Errorf("blobsFromMeta size = %d, want %d", info.size, len(blobData))
+	}
+}
+
+// TestNewFileServerRemoteFromSpec_MalformedHeaderRedacted verifies that a
+// malformed --remote-header (no colon, so it may be a bare secret) is reported
+// with the value redacted rather than echoed verbatim.
+func TestNewFileServerRemoteFromSpec_MalformedHeaderRedacted(t *testing.T) {
+	t.Parallel()
+
+	secret := "sk-super-secret-token-no-colon"
+	u, _ := url.Parse("http://example.com")
+	spec := &FileServerRemoteSpec{
+		URL:     u,
+		Headers: []string{secret},
+	}
+	_, err := NewFileServerRemoteFromSpec(spec)
+	if err == nil {
+		t.Fatal("expected error for malformed header, got nil")
+	}
+	if bytes.Contains([]byte(err.Error()), []byte(secret)) {
+		t.Errorf("error leaks the raw header value: %q", err.Error())
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("redacted")) {
+		t.Errorf("error does not mention redaction: %q", err.Error())
 	}
 }
 

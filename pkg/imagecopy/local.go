@@ -119,11 +119,10 @@ func applyCompressionDefaults(cfg CompressionConfig) CompressionConfig {
 
 func newSkopeoWithCompression(invoker cli.Invoker, cfg CompressionConfig) *skopeo.Skopeo {
 	cfg = applyCompressionDefaults(cfg)
-	return &skopeo.Skopeo{
-		Invoker:           invoker,
-		CompressionFormat: cfg.Format,
-		CompressionLevel:  cfg.Level,
-	}
+	s := skopeo.NewSkopeo(invoker)
+	s.CompressionFormat = cfg.Format
+	s.CompressionLevel = cfg.Level
+	return s
 }
 
 // LocalConfig configures [NewLocal].

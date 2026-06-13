@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/ngicks/oci-image-copy/pkg/cli"
 )
@@ -68,12 +67,11 @@ func appendTransportRefTag(transport Transport, arg1, arg2 string) (string, erro
 	}
 }
 
-// Skopeo is a typed wrapper over the skopeo CLI.
+// Skopeo is a typed wrapper over the skopeo CLI. It embeds [cli.Tool] for the
+// shared Invoker / Exe / Version plumbing and adds skopeo-specific methods and
+// compression settings.
 type Skopeo struct {
-	Invoker cli.Invoker
-	// Exe is the skopeo executable name (or path). Empty defaults to
-	// "skopeo".
-	Exe string
+	cli.Tool
 
 	// CompressionFormat sets `--dest-compress-format <format>` on
 	// every copy operation when non-empty. Recognized by skopeo:
@@ -85,20 +83,9 @@ type Skopeo struct {
 	CompressionLevel int
 }
 
-func (s *Skopeo) exe() string {
-	if s.Exe == "" {
-		return "skopeo"
-	}
-	return s.Exe
-}
-
-// Version returns the trimmed `skopeo --version` output.
-func (s *Skopeo) Version(ctx context.Context) (string, error) {
-	out, err := s.Invoker.Command(ctx, s.exe(), "--version").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
+// NewSkopeo returns a [Skopeo] driving inv (executable "skopeo").
+func NewSkopeo(inv cli.Invoker) *Skopeo {
+	return &Skopeo{Tool: cli.Tool{Invoker: inv, DefaultExe: "skopeo"}}
 }
 
 // Inspect runs `skopeo inspect` and returns its stdout. When raw is
@@ -127,7 +114,7 @@ func (s *Skopeo) Inspect(
 	}
 	args = append(args, extraArgs...)
 	args = append(args, srcStr)
-	return s.Invoker.Command(ctx, s.exe(), args...).Output()
+	return s.Output(ctx, args...)
 }
 
 // Copy copies src into dst using the shared blob pool at
@@ -172,7 +159,7 @@ func (s *Skopeo) Copy(ctx context.Context, src, dst TransportRef, sharedBlobDir 
 		}
 	}
 	args = append(args, srcStr, dstStr)
-	return s.Invoker.Command(ctx, s.exe(), args...).Run()
+	return s.Run(ctx, args...)
 }
 
 func (s *Skopeo) compressionArgs() []string {

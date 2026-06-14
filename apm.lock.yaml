@@ -1,25 +1,38 @@
 lockfile_version: '1'
-generated_at: '2026-05-01T18:34:15.533391+00:00'
-apm_version: 0.9.2
+generated_at: '2026-06-14T10:45:56.774663+00:00'
+apm_version: 0.18.0
 dependencies:
 - repo_url: ngicks/agents-package
   host: github.com
+  resolved_commit: 730b9e9000177592f1af53628877337fb40f0fe2
   virtual_path: instructions/base-env.instructions.md
   is_virtual: true
-  package_type: apm_package
+  deployed_files:
+  - .claude/rules/base-env.md
+  deployed_file_hashes:
+    .claude/rules/base-env.md: sha256:a8e409d534a453b252382ade30cd392cfcd17eff302616e2551f456d8432854e
   content_hash: sha256:e8e2f850d9cb676f3e9dc7756563576bc3dca4aed77f162987d88b6a7a0d18c5
 - repo_url: ngicks/agents-package
   host: github.com
+  resolved_commit: 730b9e9000177592f1af53628877337fb40f0fe2
   virtual_path: instructions/go/go-basics.instructions.md
   is_virtual: true
-  package_type: apm_package
-  content_hash: sha256:fa26d9e17858c7c5a2abb429a549c2a7a4ea5a19c627c5e33ab5bcc069f68220
+  deployed_files:
+  - .claude/rules/go-basics.md
+  deployed_file_hashes:
+    .claude/rules/go-basics.md: sha256:feb91c7f9c7fbb752df5390b000d2cc7a15e0397de5e40eaf8cfe37bf2896f34
+  content_hash: sha256:66bae51c80e9bb324b7de4d9a7d451de94ce8eb3ec49620140a30efc2b1111c7
 - repo_url: ngicks/agents-package
   host: github.com
-  resolved_commit: 3df5bca49b774d9619128e8fc7b987273598f7d3
+  resolved_commit: 730b9e9000177592f1af53628877337fb40f0fe2
   virtual_path: skills/go-edit-cobra
   is_virtual: true
   package_type: claude_skill
   deployed_files:
   - .agents/skills/go-edit-cobra
-  content_hash: sha256:d51f6a1f72914616a670f961a932af9a38b9d5e6abe1e63920aa57817f1c2e37
+  - .claude/skills/go-edit-cobra
+  content_hash: sha256:ea3119c9621726e6d4e67417e73b2eac518dce17dd70fe1df663b49a0b0a06a8
+local_deployed_files:
+- .claude/rules/local.md
+local_deployed_file_hashes:
+  .claude/rules/local.md: sha256:59d7906130dd673f00ed335d431d3b8b9a9521f36d1222cbaffa0bd80e2b22a4

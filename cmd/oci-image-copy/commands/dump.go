@@ -3,42 +3,64 @@ package commands
 import (
 	"fmt"
 
+	"github.com/spf13/cobra"
+
 	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
-	"github.com/spf13/cobra"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 )
 
-var dumpCmd = &cobra.Command{
-	Use:   "dump IMAGE [IMAGE...]",
-	Short: "Dump local images into the on-disk OCI store layout.",
-	Args:  cobra.MinimumNArgs(1),
-	RunE:  runDump,
-}
+func dumpCmd(parent *cobra.Command, flagConfig *string) {
+	var (
+		flagLocal        string
+		flagLocalDumpDir string
+	)
 
-var dumpFlags struct {
-	local        string
-	localDumpDir string
-}
+	cmd := &cobra.Command{
+		Use:               "dump IMAGE [IMAGE...]",
+		Short:             "Dump local images into the on-disk OCI store layout.",
+		Args:              cobra.MinimumNArgs(1),
+		ValidArgsFunction: cobra.NoFileCompletions,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDump(cmd, args, *flagConfig, flagLocal, flagLocalDumpDir)
+		},
+	}
 
-func init() {
-	rootCmd.AddCommand(dumpCmd)
-
-	f := dumpCmd.Flags()
+	f := cmd.Flags()
 	f.StringVar(
-		&dumpFlags.local,
+		&flagLocal,
 		"local",
 		"containers-storage:",
 		"local transport spec: containers-storage:|docker-daemon:|oci:/path|docker:",
 	)
-	f.StringVar(&dumpFlags.localDumpDir, "local-dumpdir", "",
+	f.StringVar(&flagLocalDumpDir, "local-dumpdir", "",
 		"base of the local on-disk store layout; "+
 			"when empty, falls back to ${XDG_DATA_HOME:-$HOME/.local/share}/oci-image-copy")
+
+	parent.AddCommand(cmd)
 }
 
-func runDump(cmd *cobra.Command, args []string) error {
+func runDump(
+	cmd *cobra.Command,
+	args []string,
+	flagConfig string,
+	flagLocal string,
+	flagLocalDumpDir string,
+) error {
 	ctx := cmd.Context()
 
-	ls, err := imagecopy.ParseLocalSpec(dumpFlags.local)
+	cfg, err := ociimagecopy.LoadConfig(flagConfig)
+	if err != nil {
+		return err
+	}
+	if cmd.Flags().Changed("local") {
+		cfg.Local = flagLocal
+	}
+	if cmd.Flags().Changed("local-dumpdir") {
+		cfg.LocalDumpDir = flagLocalDumpDir
+	}
+
+	ls, err := imagecopy.ParseLocalSpec(cfg.Local)
 	if err != nil {
 		return err
 	}
@@ -47,7 +69,7 @@ func runDump(cmd *cobra.Command, args []string) error {
 	}
 
 	local, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
-		BaseDir:   dumpFlags.localDumpDir,
+		BaseDir:   cfg.LocalDumpDir,
 		Transport: ls.Transport,
 		OCIPath:   ls.Path,
 	})

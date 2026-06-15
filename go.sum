@@ -1,3 +1,5 @@
+github.com/caarlos0/env/v11 v11.4.1 h1:fYwH0sWEsBSMPG7t4e/PEfTFzrWrpjyygXyUnWiSwEw=
+github.com/caarlos0/env/v11 v11.4.1/go.mod h1:qupehSf/Y0TUTsxKywqRt/vJjN5nz6vauiYEUUr8P4U=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
@@ -11,8 +13,8 @@ github.com/ngicks/go-fsys-helper/fsutil v0.0.0-20260611004045-dbea04231ffd h1:HX
 github.com/ngicks/go-fsys-helper/fsutil v0.0.0-20260611004045-dbea04231ffd/go.mod h1:3Ko4N72NP33xyl3yIEj3JzbOAA8Ko/ZxgmbAl7uZhf4=
 github.com/ngicks/go-fsys-helper/stream v0.2.2-0.20260611190045-151cd32d2e1e h1:h7dn0pXY8PcwgS7BSYLKanKWQRD7BemXR4nFNHYRmWM=
 github.com/ngicks/go-fsys-helper/stream v0.2.2-0.20260611190045-151cd32d2e1e/go.mod h1:+7p+ekRp4CjEkl6VWa9IjzOxNgvMmdsoj5IszCjVBUg=
-github.com/ngicks/go-fsys-helper/vroot v0.0.0-20260611004045-dbea04231ffd h1:JMH9XmgghZwElgnoXaXSgggn5l0pWQa4TZ+Xwl9ZzQ0=
-github.com/ngicks/go-fsys-helper/vroot v0.0.0-20260611004045-dbea04231ffd/go.mod h1:OfdXCVHGt6i9a1ukb9Fg9+D0FACO4HLKuOqfdgb1XpA=
+github.com/ngicks/go-fsys-helper/vroot v0.0.0-20260612123047-bf05d1194822 h1:Uq9Lv+Al8p3OxPFd56MG4dJgjBmT05mutcWsHJfgCXo=
+github.com/ngicks/go-fsys-helper/vroot v0.0.0-20260612123047-bf05d1194822/go.mod h1:OfdXCVHGt6i9a1ukb9Fg9+D0FACO4HLKuOqfdgb1XpA=
 github.com/ngicks/go-fsys-helper/vroot-adapter/sftpfs v0.0.0-20260611004045-dbea04231ffd h1:+uT9ZHfJF7BWk6zRKVjUDHE/F/u7yHAVzdC1464N8aQ=
 github.com/ngicks/go-fsys-helper/vroot-adapter/sftpfs v0.0.0-20260611004045-dbea04231ffd/go.mod h1:AfzzanjbmQoZZbqUQItvf/FmcGHV7fpaNCgSfqonRok=
 github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8Oi/yOhh5U=

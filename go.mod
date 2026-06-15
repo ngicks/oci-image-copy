@@ -3,6 +3,7 @@ module github.com/ngicks/oci-image-copy
 go 1.26.2
 
 require (
+	github.com/caarlos0/env/v11 v11.4.1
 	github.com/ngicks/go-common/contextkey v0.2.0
 	github.com/ngicks/go-fsys-helper/fsutil v0.0.0-20260611004045-dbea04231ffd
 	github.com/ngicks/go-fsys-helper/stream v0.2.2-0.20260611190045-151cd32d2e1e

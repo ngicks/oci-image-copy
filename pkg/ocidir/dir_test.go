@@ -333,7 +333,11 @@ func writeDumpDir(t *testing.T, indexJSON string, manifest []byte) FsDir {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte(indexJSON), 0o644); err != nil {
+	if err := os.WriteFile(
+		filepath.Join(root, "index.json"),
+		[]byte(indexJSON),
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
@@ -370,9 +374,15 @@ func TestReadManifest_MultiManifest(t *testing.T) {
 	t.Parallel()
 	idx := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[` +
 		`{"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
-		`"digest":"sha256:` + strings.Repeat("a", 64) + `","size":1},` +
+		`"digest":"sha256:` + strings.Repeat(
+		"a",
+		64,
+	) + `","size":1},` +
 		`{"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
-		`"digest":"sha256:` + strings.Repeat("b", 64) + `","size":1}]}`
+		`"digest":"sha256:` + strings.Repeat(
+		"b",
+		64,
+	) + `","size":1}]}`
 	dir := writeDumpDir(t, idx, nil)
 	_, _, err := ReadManifest(context.Background(), dir)
 	if !errors.Is(err, ErrMultiManifestIndex) {
@@ -388,8 +398,12 @@ func TestReadManifest_NestedIndex(t *testing.T) {
 		"application/vnd.oci.image.index.v1+json",
 		MediaTypeDockerList,
 	} {
-		idx := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[` +
-			`{"mediaType":"` + mt + `","digest":"sha256:` + strings.Repeat("c", 64) + `","size":1}]}`
+		idx := `{"schemaVersion":2,` +
+			`"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[` +
+			`{"mediaType":"` + mt + `","digest":"sha256:` + strings.Repeat(
+			"c",
+			64,
+		) + `","size":1}]}`
 		dir := writeDumpDir(t, idx, nil)
 		_, _, err := ReadManifest(context.Background(), dir)
 		if !errors.Is(err, ErrNestedIndex) {
@@ -406,7 +420,13 @@ func TestVerifyBlobBytes(t *testing.T) {
 	if err := VerifyBlobBytes(dg, data); err != nil {
 		t.Errorf("VerifyBlobBytes on matching data: %v", err)
 	}
-	if err := VerifyBlobBytes(dg, []byte("hello blob!")); !errors.Is(err, ErrManifestDigestMismatch) {
+	if err := VerifyBlobBytes(
+		dg,
+		[]byte("hello blob!"),
+	); !errors.Is(
+		err,
+		ErrManifestDigestMismatch,
+	) {
 		t.Errorf("expected ErrManifestDigestMismatch on mismatch, got %v", err)
 	}
 	if err := VerifyBlobBytes(digest.Digest("not-a-digest"), data); err == nil {

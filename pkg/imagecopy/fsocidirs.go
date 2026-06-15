@@ -131,6 +131,8 @@ func (d *FsOciDirs) PutTagFile(
 		path.Join(rel, name),
 		bytes.NewReader(data),
 		os.ModePerm,
+		nil, // preHooks: none for small metadata files
+		nil, // postHooks: none for small metadata files
 	)
 }
 

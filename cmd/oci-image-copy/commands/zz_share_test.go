@@ -167,13 +167,13 @@ func TestHasAuthorizationHeader(t *testing.T) {
 // logic without constructing a live Remote.
 func applyEnvAuth(headers []string, authFromEnv string) []string {
 	opts := fileServerOpts{
-		headers:     headers,
-		authFromEnv: authFromEnv,
+		headers: headers,
+		auth:    authFromEnv,
 	}
 	// Replicate the merging logic from buildRemote without the full Remote dial.
 	result := append([]string(nil), opts.headers...)
-	if opts.authFromEnv != "" && !hasAuthorizationHeader(result) {
-		result = append(result, "Authorization: "+opts.authFromEnv)
+	if opts.auth != "" && !hasAuthorizationHeader(result) {
+		result = append(result, "Authorization: "+opts.auth)
 	}
 	return result
 }

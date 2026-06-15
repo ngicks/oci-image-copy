@@ -5,11 +5,11 @@ package imagecopy
 // imagecopy tests don't reach across package boundaries for
 // internal-test data.
 
-// ociManifestFixture / indexJSONFixture use fake (non-SHA256) digests and
-// sizes.  They are used only by enumerate_test.go tests which exercise
-// directory-walking logic and do NOT perform actual blob transfers.
-// The fixture constants must NOT be used by transfer tests (push/pull)
-// because the sizes and digests are intentionally inconsistent.
+// ociManifestFixture uses fake (non-SHA256) digests and sizes.  It is used
+// only by enumerate_test.go tests which exercise directory-walking logic and
+// do NOT perform actual blob transfers.  The fixture constant must NOT be used
+// by transfer tests (push/pull) because the sizes and digests are
+// intentionally inconsistent.
 const ociManifestFixture = `{
   "schemaVersion": 2,
   "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -28,18 +28,6 @@ const ociManifestFixture = `{
       "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
       "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "size": 6
-    }
-  ]
-}`
-
-const indexJSONFixture = `{
-  "schemaVersion": 2,
-  "mediaType": "application/vnd.oci.image.index.v1+json",
-  "manifests": [
-    {
-      "mediaType": "application/vnd.oci.image.manifest.v1+json",
-      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-      "size": 4321
     }
   ]
 }`

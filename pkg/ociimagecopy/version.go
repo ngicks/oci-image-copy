@@ -1,5 +1,3 @@
-// Package ociimagecopy implements the oci-image-copy service backing the
-// binary of the same name.
 package ociimagecopy
 
 // Version is the human-readable version string. The release helper at

@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 )
@@ -60,7 +59,7 @@ func runDump(
 		cfg.LocalDumpDir = flagLocalDumpDir
 	}
 
-	ls, err := imagecopy.ParseLocalSpec(cfg.Local)
+	ls, err := ociimagecopy.ParseLocalSpec(cfg.Local)
 	if err != nil {
 		return err
 	}
@@ -68,7 +67,7 @@ func runDump(
 		return err
 	}
 
-	local, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+	local, err := ociimagecopy.NewLocal(ctx, ociimagecopy.LocalConfig{
 		BaseDir:   cfg.LocalDumpDir,
 		Transport: ls.Transport,
 		OCIPath:   ls.Path,

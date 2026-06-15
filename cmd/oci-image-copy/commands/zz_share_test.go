@@ -6,7 +6,7 @@ import (
 
 	"github.com/ngicks/oci-image-copy/pkg/cli/skopeo"
 	"github.com/ngicks/oci-image-copy/pkg/cli/ssh"
-	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 )
 
 // TestValidateSSHTarget covers the SSH target validation.
@@ -52,7 +52,7 @@ func TestValidateEnumerableLocal(t *testing.T) {
 
 	t.Run("docker: rejected", func(t *testing.T) {
 		t.Parallel()
-		ls := imagecopy.LocalSpec{Transport: skopeo.TransportDocker}
+		ls := ociimagecopy.LocalSpec{Transport: skopeo.TransportDocker}
 		if err := validateEnumerableLocal("--local", ls); err == nil {
 			t.Fatal("expected error for docker: transport in pull, got nil")
 		}
@@ -60,7 +60,7 @@ func TestValidateEnumerableLocal(t *testing.T) {
 
 	t.Run("containers-storage: allowed", func(t *testing.T) {
 		t.Parallel()
-		ls := imagecopy.LocalSpec{Transport: skopeo.TransportContainersStorage}
+		ls := ociimagecopy.LocalSpec{Transport: skopeo.TransportContainersStorage}
 		if err := validateEnumerableLocal("--local", ls); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -68,7 +68,7 @@ func TestValidateEnumerableLocal(t *testing.T) {
 
 	t.Run("oci: allowed", func(t *testing.T) {
 		t.Parallel()
-		ls := imagecopy.LocalSpec{
+		ls := ociimagecopy.LocalSpec{
 			Transport: skopeo.TransportOci,
 			Path:      "/some/path",
 		}
@@ -90,7 +90,7 @@ func TestValidateSourceLocal(t *testing.T) {
 	for _, tr := range transports {
 		t.Run(string(tr), func(t *testing.T) {
 			t.Parallel()
-			ls := imagecopy.LocalSpec{Transport: tr}
+			ls := ociimagecopy.LocalSpec{Transport: tr}
 			if err := validateSourceLocal("--local", ls); err != nil {
 				t.Fatalf("unexpected error for %s: %v", tr, err)
 			}

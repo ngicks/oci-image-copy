@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 )
 
@@ -123,7 +122,7 @@ func runPush(
 	}
 
 	// Validate --local spec (source-capable transports for push).
-	ls, err := imagecopy.ParseLocalSpec(cfg.Local)
+	ls, err := ociimagecopy.ParseLocalSpec(cfg.Local)
 	if err != nil {
 		return err
 	}
@@ -143,7 +142,7 @@ func runPush(
 	}
 	defer share.Close()
 
-	res, err := share.Push(ctx, imagecopy.PushArgs{
+	res, err := share.Push(ctx, ociimagecopy.PushArgs{
 		Images:          args,
 		DryRun:          flagDryRun,
 		AssumeRemoteHas: flagAssumeRemoteHas,

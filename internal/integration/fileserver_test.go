@@ -41,9 +41,9 @@ import (
 	"github.com/ngicks/go-common/contextkey"
 	fsfileserver "github.com/ngicks/go-fsys-helper/stream/fileserver"
 	"github.com/ngicks/oci-image-copy/pkg/cli/skopeo"
-	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
-	"github.com/ngicks/oci-image-copy/pkg/imagecopy/fileserver"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy/fileserver"
 	godigest "github.com/opencontainers/go-digest"
 )
 
@@ -250,7 +250,7 @@ func newFSRemote(
 	t *testing.T,
 	srv *httptest.Server,
 	chunkSize int64,
-) imagecopy.Remote {
+) ociimagecopy.Remote {
 	t.Helper()
 	u, err := url.Parse(srv.URL)
 	if err != nil {
@@ -260,7 +260,7 @@ func newFSRemote(
 		BaseURL: u,
 		Client:  srv.Client(),
 	}
-	r := imagecopy.NewFileServerRemote(imagecopy.FileServerConfig{
+	r := ociimagecopy.NewFileServerRemote(ociimagecopy.FileServerRemoteConfig{
 		Client:    c,
 		Naming:    fileserver.DefaultNaming{},
 		ChunkSize: chunkSize,
@@ -290,7 +290,7 @@ func TestFileServer_ListImages_Error(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	r := newFSRemote(t, srv, imagecopy.DefaultChunkSize)
+	r := newFSRemote(t, srv, ociimagecopy.DefaultChunkSize)
 	for _, err := range r.ListImages(context.Background()) {
 		if err == nil {
 			t.Error("ListImages: want error, got nil")
@@ -317,10 +317,10 @@ func TestFileServer_PushMeta(t *testing.T) {
 	ctx, cancel := context.WithTimeout(discardCtx(t), 60*time.Second)
 	defer cancel()
 
-	remote := newFSRemote(t, srv, imagecopy.DefaultChunkSize)
+	remote := newFSRemote(t, srv, ociimagecopy.DefaultChunkSize)
 	local := env.makeLocal(ctx)
 
-	res, err := local.Push(ctx, imagecopy.PushArgs{
+	res, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{env.fixture.imageRef},
 	}, remote)
 	if err != nil {
@@ -366,8 +366,8 @@ func TestFileServer_PushMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnmarshalImageMeta: %v", err)
 	}
-	if meta.ChunkSize != imagecopy.DefaultChunkSize {
-		t.Errorf("meta.ChunkSize = %d, want %d", meta.ChunkSize, imagecopy.DefaultChunkSize)
+	if meta.ChunkSize != ociimagecopy.DefaultChunkSize {
+		t.Errorf("meta.ChunkSize = %d, want %d", meta.ChunkSize, ociimagecopy.DefaultChunkSize)
 	}
 	// Descriptors: manifest + config + layer = 3 minimum.
 	if len(meta.Descriptors) < 3 {
@@ -376,7 +376,7 @@ func TestFileServer_PushMeta(t *testing.T) {
 
 	// Second push: all blobs Reused → zero non-meta chunk PUTs.
 	handler.resetLog()
-	res2, err := local.Push(ctx, imagecopy.PushArgs{
+	res2, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{env.fixture.imageRef},
 	}, remote)
 	if err != nil {
@@ -420,7 +420,7 @@ func TestFileServer_MultiChunk(t *testing.T) {
 	remote := newFSRemote(t, srv, chunkSize)
 	local := env.makeLocal(ctx)
 
-	res, err := local.Push(ctx, imagecopy.PushArgs{
+	res, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{env.fixture.imageRef},
 	}, remote)
 	if err != nil {
@@ -488,10 +488,10 @@ func TestFileServer_DryRunPush(t *testing.T) {
 	ctx, cancel := context.WithTimeout(discardCtx(t), 60*time.Second)
 	defer cancel()
 
-	remote := newFSRemote(t, srv, imagecopy.DefaultChunkSize)
+	remote := newFSRemote(t, srv, ociimagecopy.DefaultChunkSize)
 	local := env.makeLocal(ctx)
 
-	res, err := local.Push(ctx, imagecopy.PushArgs{
+	res, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{env.fixture.imageRef},
 		DryRun: true,
 	}, remote)
@@ -520,7 +520,7 @@ func TestFileServer_DryRunPush(t *testing.T) {
 	}
 
 	// Real push so the server holds the full image (3 blobs + meta).
-	if _, err := local.Push(ctx, imagecopy.PushArgs{
+	if _, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{env.fixture.imageRef},
 	}, remote); err != nil {
 		t.Fatalf("real Push: %v", err)
@@ -530,9 +530,9 @@ func TestFileServer_DryRunPush(t *testing.T) {
 	// Dry-run against the fully pushed image: exact plan must be all-Reused.
 	// Fresh remote so no session state (meta cache) helps; the plan must come
 	// from the meta GET (PrimeRefs) + HEAD chunk probes alone.
-	remote2 := newFSRemote(t, srv, imagecopy.DefaultChunkSize)
+	remote2 := newFSRemote(t, srv, ociimagecopy.DefaultChunkSize)
 	handler.resetLog()
-	res, err = local.Push(ctx, imagecopy.PushArgs{
+	res, err = local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{env.fixture.imageRef},
 		DryRun: true,
 	}, remote2)
@@ -559,9 +559,9 @@ func TestFileServer_DryRunPush(t *testing.T) {
 	}
 	handler.deleteObject(naming.ImageMeta(ref))
 
-	remote3 := newFSRemote(t, srv, imagecopy.DefaultChunkSize)
+	remote3 := newFSRemote(t, srv, ociimagecopy.DefaultChunkSize)
 	handler.resetLog()
-	res, err = local.Push(ctx, imagecopy.PushArgs{
+	res, err = local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{env.fixture.imageRef},
 		DryRun: true,
 	}, remote3)
@@ -603,7 +603,7 @@ func TestFileServer_InterruptResume(t *testing.T) {
 	local := env.makeLocal(ctx)
 
 	// Initial push: upload everything.
-	_, err := local.Push(ctx, imagecopy.PushArgs{
+	_, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{env.fixture.imageRef},
 	}, remote)
 	if err != nil {
@@ -632,7 +632,7 @@ func TestFileServer_InterruptResume(t *testing.T) {
 
 	// Re-push and count what gets re-uploaded.
 	handler.resetLog()
-	_, err = local.Push(ctx, imagecopy.PushArgs{
+	_, err = local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{env.fixture.imageRef},
 	}, remote)
 	if err != nil {
@@ -680,7 +680,7 @@ func TestFileServer_InterruptResumePull(t *testing.T) {
 	local := env.makeLocal(ctx)
 
 	// Step 1: Push to the file server.
-	_, err := local.Push(ctx, imagecopy.PushArgs{
+	_, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{env.fixture.imageRef},
 	}, remote)
 	if err != nil {
@@ -695,7 +695,7 @@ func TestFileServer_InterruptResumePull(t *testing.T) {
 	pullLocalBase := filepath.Join(env.tmpDir, "pull-resume-local")
 	must(t, os.MkdirAll(pullLocalBase, 0o755))
 
-	pullLocal, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+	pullLocal, err := ociimagecopy.NewLocal(ctx, ociimagecopy.LocalConfig{
 		BaseDir:   pullLocalBase,
 		Transport: skopeo.TransportOci,
 		OCIPath:   env.fixture.srcDir,
@@ -705,7 +705,7 @@ func TestFileServer_InterruptResumePull(t *testing.T) {
 	}
 
 	remote2 := newFSRemote(t, srv, chunkSize)
-	pullRes, err := pullLocal.Pull(ctx, imagecopy.PullArgs{
+	pullRes, err := pullLocal.Pull(ctx, ociimagecopy.PullArgs{
 		Images:            []string{env.fixture.imageRef},
 		AssumeLocalHasSet: map[string]struct{}{},
 	}, remote2)
@@ -794,7 +794,7 @@ func TestFileServer_InterruptResumePull(t *testing.T) {
 	handler.resetRangeLog()
 
 	remote3 := newFSRemote(t, srv, chunkSize)
-	pullRes2, err := pullLocal.Pull(ctx, imagecopy.PullArgs{
+	pullRes2, err := pullLocal.Pull(ctx, ociimagecopy.PullArgs{
 		Images:            []string{env.fixture.imageRef},
 		AssumeLocalHasSet: map[string]struct{}{},
 	}, remote3)

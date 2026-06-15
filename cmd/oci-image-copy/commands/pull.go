@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 )
 
@@ -129,7 +128,7 @@ func runPull(
 	}
 
 	// Validate --local spec: pull cannot use docker: transport (not enumerable).
-	ls, err := imagecopy.ParseLocalSpec(cfg.Local)
+	ls, err := ociimagecopy.ParseLocalSpec(cfg.Local)
 	if err != nil {
 		return err
 	}
@@ -149,7 +148,7 @@ func runPull(
 	}
 	defer share.Close()
 
-	res, err := share.Pull(ctx, imagecopy.PullArgs{
+	res, err := share.Pull(ctx, ociimagecopy.PullArgs{
 		Images:            args,
 		DryRun:            flagDryRun,
 		AssumeLocalHas:    flagAssumeLocalHas,

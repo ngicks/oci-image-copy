@@ -6,14 +6,14 @@ import (
 	"strings"
 
 	"github.com/ngicks/oci-image-copy/pkg/cli/ssh"
-	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 )
 
 // fileServerOpts holds the companion flags for a --remote file-server:...
 // spec. They supplement the URL parsed from the spec.
 type fileServerOpts struct {
 	headers      []string
-	chunkSize    string // human-readable (parsed by imagecopy.ParseChunkSize)
+	chunkSize    string // human-readable (parsed by ociimagecopy.ParseChunkSize)
 	namingPrefix string
 	// auth carries the resolved file-server Authorization header value (from the
 	// service config, defaults < file < env). It is added as
@@ -23,8 +23,8 @@ type fileServerOpts struct {
 	auth string
 }
 
-// initShare parses --local and --remote specs, builds a [*imagecopy.Local]
-// and a [imagecopy.Remote], and wraps them in a [*imagecopy.Share].
+// initShare parses --local and --remote specs, builds a [*ociimagecopy.Local]
+// and a [ociimagecopy.Remote], and wraps them in a [*ociimagecopy.Share].
 //
 // For SSH remotes it validates the target and runs an ssh probe before
 // dialing SFTP. For local-directory remotes no probe is needed.
@@ -35,13 +35,13 @@ func initShare(
 	remoteSpec string,
 	localDumpDir string,
 	fsOpts fileServerOpts,
-) (*imagecopy.Share, error) {
-	ls, err := imagecopy.ParseLocalSpec(localSpec)
+) (*ociimagecopy.Share, error) {
+	ls, err := ociimagecopy.ParseLocalSpec(localSpec)
 	if err != nil {
 		return nil, err
 	}
 
-	local, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+	local, err := ociimagecopy.NewLocal(ctx, ociimagecopy.LocalConfig{
 		BaseDir:   localDumpDir,
 		Transport: ls.Transport,
 		OCIPath:   ls.Path,
@@ -55,7 +55,7 @@ func initShare(
 		return nil, err
 	}
 
-	return imagecopy.NewShare(local, remote), nil
+	return ociimagecopy.NewShare(local, remote), nil
 }
 
 // buildRemote parses a --remote spec and constructs the appropriate Remote.
@@ -64,25 +64,25 @@ func buildRemote(
 	ctx context.Context,
 	remoteSpec string,
 	fsOpts fileServerOpts,
-) (imagecopy.Remote, error) {
-	rs, err := imagecopy.ParseRemoteSpec(remoteSpec)
+) (ociimagecopy.Remote, error) {
+	rs, err := ociimagecopy.ParseRemoteSpec(remoteSpec)
 	if err != nil {
 		return nil, err
 	}
 
 	switch rs.Kind {
-	case imagecopy.RemoteKindSSH:
+	case ociimagecopy.RemoteKindSSH:
 		return buildSSHRemote(ctx, rs.SSH)
-	case imagecopy.RemoteKindLocalDir:
-		return imagecopy.NewLocalDirRemote(rs.LocalDir.Path)
-	case imagecopy.RemoteKindFileServer:
+	case ociimagecopy.RemoteKindLocalDir:
+		return ociimagecopy.NewLocalDirRemote(rs.LocalDir.Path)
+	case ociimagecopy.RemoteKindFileServer:
 		spec := rs.FileServer
 		// Merge companion flag values into the spec.
 		if len(fsOpts.headers) > 0 {
 			spec.Headers = fsOpts.headers
 		}
 		if fsOpts.chunkSize != "" {
-			cs, err := imagecopy.ParseChunkSize(fsOpts.chunkSize)
+			cs, err := ociimagecopy.ParseChunkSize(fsOpts.chunkSize)
 			if err != nil {
 				return nil, fmt.Errorf("--remote-chunk-size: %w", err)
 			}
@@ -97,7 +97,7 @@ func buildRemote(
 		if fsOpts.auth != "" && !hasAuthorizationHeader(spec.Headers) {
 			spec.Headers = append(spec.Headers, "Authorization: "+fsOpts.auth)
 		}
-		return imagecopy.NewFileServerRemoteFromSpec(spec)
+		return ociimagecopy.NewFileServerRemoteFromSpec(spec)
 	default:
 		return nil, fmt.Errorf("internal: unknown remote kind %v", rs.Kind)
 	}
@@ -105,7 +105,7 @@ func buildRemote(
 
 // validateSourceLocal rejects --local specs that cannot act as a push/dump
 // source. All transports including docker: are valid sources.
-func validateSourceLocal(flag string, ls imagecopy.LocalSpec) error {
+func validateSourceLocal(flag string, ls ociimagecopy.LocalSpec) error {
 	// All supported local transports are valid as push/dump sources.
 	// ParseLocalSpec already rejects unknown transports, so no extra work needed.
 	_ = flag
@@ -115,7 +115,7 @@ func validateSourceLocal(flag string, ls imagecopy.LocalSpec) error {
 
 // validateEnumerableLocal rejects --local specs that cannot be enumerated
 // or loaded into. docker: transport is a push/dump source only.
-func validateEnumerableLocal(flag string, ls imagecopy.LocalSpec) error {
+func validateEnumerableLocal(flag string, ls ociimagecopy.LocalSpec) error {
 	switch ls.Transport {
 	case "docker":
 		return fmt.Errorf(
@@ -129,14 +129,14 @@ func validateEnumerableLocal(flag string, ls imagecopy.LocalSpec) error {
 }
 
 // buildSSHRemote validates and dials the SSH-backed remote from a parsed spec.
-func buildSSHRemote(ctx context.Context, spec *imagecopy.SSHRemoteSpec) (imagecopy.Remote, error) {
+func buildSSHRemote(ctx context.Context, spec *ociimagecopy.SSHRemoteSpec) (ociimagecopy.Remote, error) {
 	if err := validateSSHTarget(spec.Target); err != nil {
 		return nil, err
 	}
 	if err := ssh.Probe(ctx, spec.Target); err != nil {
 		return nil, fmt.Errorf("ssh probe: %w", err)
 	}
-	return imagecopy.NewRemote(ctx, imagecopy.RemoteConfig{
+	return ociimagecopy.NewRemote(ctx, ociimagecopy.RemoteConfig{
 		Target:    spec.Target,
 		Transport: spec.Transport,
 		OCIPath:   spec.OCIPath,

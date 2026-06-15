@@ -32,6 +32,13 @@ func rootCmd() *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// oci-image-copy emits its operational logs through slog, so logging
+			// is ON by default here — a deliberate relaxation of loggerfactory's
+			// opt-in default (which would otherwise discard every record unless
+			// --log/--log-level or OCI_IMAGE_COPY_LOG_* is set). The flags and env
+			// vars still override the format (default json) and level (default
+			// info) on top of this enabled baseline.
+			logConfig.Enabled = true
 			if err := loggerfactory.ReadEnv(logConfig, "oci-image-copy", os.Environ()); err != nil {
 				fmt.Fprintln(os.Stderr, "warning:", err)
 			}

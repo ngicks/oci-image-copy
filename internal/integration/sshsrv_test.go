@@ -30,8 +30,8 @@ import (
 
 	"github.com/ngicks/oci-image-copy/pkg/cli/skopeo"
 	"github.com/ngicks/oci-image-copy/pkg/cli/ssh"
-	"github.com/ngicks/oci-image-copy/pkg/imagecopy"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 )
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -593,9 +593,9 @@ func validateFixtureWithSkopeo(t *testing.T, f *ociFixture) {
 }
 
 // makeLocal creates a Local configured for oci transport backed by the fixture.
-func (e *testEnv) makeLocal(ctx context.Context) *imagecopy.Local {
+func (e *testEnv) makeLocal(ctx context.Context) *ociimagecopy.Local {
 	e.t.Helper()
-	local, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+	local, err := ociimagecopy.NewLocal(ctx, ociimagecopy.LocalConfig{
 		BaseDir:   e.localBase,
 		Transport: skopeo.TransportOci,
 		OCIPath:   e.fixture.srcDir,
@@ -608,9 +608,9 @@ func (e *testEnv) makeLocal(ctx context.Context) *imagecopy.Local {
 
 // makeRemote dials the in-process SSH server and returns a Remote configured
 // for oci transport with an explicit OCIPath inside the remote temp dir.
-func (e *testEnv) makeRemote(ctx context.Context, remoteOCIPath string) imagecopy.Remote {
+func (e *testEnv) makeRemote(ctx context.Context, remoteOCIPath string) ociimagecopy.Remote {
 	e.t.Helper()
-	remote, err := imagecopy.NewRemote(ctx, imagecopy.RemoteConfig{
+	remote, err := ociimagecopy.NewRemote(ctx, ociimagecopy.RemoteConfig{
 		Target:    e.sshSrv.target(),
 		Transport: skopeo.TransportOci,
 		OCIPath:   remoteOCIPath,
@@ -715,7 +715,7 @@ func TestE2E_Push(t *testing.T) {
 	remote := e.makeRemote(ctx, remoteOCIPath)
 
 	// ── First push: all blobs should be sent ──
-	res, err := local.Push(ctx, imagecopy.PushArgs{
+	res, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{e.imageRef()},
 	}, remote)
 	if err != nil {
@@ -746,7 +746,7 @@ func TestE2E_Push(t *testing.T) {
 	}
 
 	// ── Second push: all blobs reused (Sent==0) ──
-	res2, err := local.Push(ctx, imagecopy.PushArgs{
+	res2, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{e.imageRef()},
 	}, remote)
 	if err != nil {
@@ -778,7 +778,7 @@ func TestE2E_Pull(t *testing.T) {
 	{
 		local := e.makeLocal(ctx)
 		remote := e.makeRemote(ctx, remoteOCIPath)
-		if _, err := local.Push(ctx, imagecopy.PushArgs{
+		if _, err := local.Push(ctx, ociimagecopy.PushArgs{
 			Images: []string{e.imageRef()},
 		}, remote); err != nil {
 			t.Fatalf("seed push: %v", err)
@@ -790,7 +790,7 @@ func TestE2E_Pull(t *testing.T) {
 	pullLocalBase := filepath.Join(e.tmpDir, "pull-local-base")
 	must(t, os.MkdirAll(pullLocalBase, 0o755))
 
-	pullLocal, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+	pullLocal, err := ociimagecopy.NewLocal(ctx, ociimagecopy.LocalConfig{
 		BaseDir:   pullLocalBase,
 		Transport: skopeo.TransportOci,
 		OCIPath:   e.fixture.srcDir,
@@ -800,7 +800,7 @@ func TestE2E_Pull(t *testing.T) {
 	}
 
 	remote := e.makeRemote(ctx, remoteOCIPath)
-	res, err := pullLocal.Pull(ctx, imagecopy.PullArgs{
+	res, err := pullLocal.Pull(ctx, ociimagecopy.PullArgs{
 		Images:            []string{e.imageRef()},
 		AssumeLocalHasSet: map[string]struct{}{}, // fresh, no blobs
 	}, remote)
@@ -858,7 +858,7 @@ func TestE2E_DryRun(t *testing.T) {
 	// Snapshot remote before dry-run.
 	before := snapshotFileList(t, e.remoteTmp)
 
-	res, err := local.Push(ctx, imagecopy.PushArgs{
+	res, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images:             []string{e.imageRef()},
 		DryRun:             true,
 		AssumeRemoteHasSet: map[string]struct{}{}, // empty → would send everything
@@ -921,7 +921,7 @@ func TestE2E_ResumeFromPartialPush(t *testing.T) {
 
 	remote := e.makeRemote(ctx, remoteOCIPath)
 
-	res, err := local.Push(ctx, imagecopy.PushArgs{
+	res, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{e.imageRef()},
 	}, remote)
 	if err != nil {
@@ -972,7 +972,7 @@ func TestE2E_DigestMismatchOnPullResume(t *testing.T) {
 	{
 		seedLocal := e.makeLocal(ctx)
 		seedRemote := e.makeRemote(ctx, remoteOCIPath)
-		if _, err := seedLocal.Push(ctx, imagecopy.PushArgs{
+		if _, err := seedLocal.Push(ctx, ociimagecopy.PushArgs{
 			Images: []string{e.imageRef()},
 		}, seedRemote); err != nil {
 			t.Fatalf("seed push: %v", err)
@@ -1001,7 +1001,7 @@ func TestE2E_DigestMismatchOnPullResume(t *testing.T) {
 	must(t, os.WriteFile(partPath, corrupt, 0o644))
 	must(t, os.WriteFile(sidecarPath, []byte(stored.layerDigest), 0o644))
 
-	pullLocal, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+	pullLocal, err := ociimagecopy.NewLocal(ctx, ociimagecopy.LocalConfig{
 		BaseDir:   pullLocalBase,
 		Transport: skopeo.TransportOci,
 		OCIPath:   e.fixture.srcDir,
@@ -1011,7 +1011,7 @@ func TestE2E_DigestMismatchOnPullResume(t *testing.T) {
 	}
 	remote := e.makeRemote(ctx, remoteOCIPath)
 
-	_, pullErr := pullLocal.Pull(ctx, imagecopy.PullArgs{
+	_, pullErr := pullLocal.Pull(ctx, ociimagecopy.PullArgs{
 		Images:            []string{e.imageRef()},
 		AssumeLocalHasSet: map[string]struct{}{},
 	}, remote)
@@ -1058,7 +1058,7 @@ func TestE2E_Pull_DumpImage_OciNoOp(t *testing.T) {
 	{
 		seedLocal := e.makeLocal(ctx)
 		seedRemote := e.makeRemote(ctx, remoteOCIPath)
-		if _, err := seedLocal.Push(ctx, imagecopy.PushArgs{
+		if _, err := seedLocal.Push(ctx, ociimagecopy.PushArgs{
 			Images: []string{e.imageRef()},
 		}, seedRemote); err != nil {
 			t.Fatalf("seed push: %v", err)
@@ -1072,7 +1072,7 @@ func TestE2E_Pull_DumpImage_OciNoOp(t *testing.T) {
 	// Pull into a fresh local base.
 	pullLocalBase := filepath.Join(e.tmpDir, "pull-noop-local-base")
 	must(t, os.MkdirAll(pullLocalBase, 0o755))
-	pullLocal, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+	pullLocal, err := ociimagecopy.NewLocal(ctx, ociimagecopy.LocalConfig{
 		BaseDir:   pullLocalBase,
 		Transport: skopeo.TransportOci,
 		OCIPath:   e.fixture.srcDir,
@@ -1082,7 +1082,7 @@ func TestE2E_Pull_DumpImage_OciNoOp(t *testing.T) {
 	}
 
 	remote := e.makeRemote(ctx, remoteOCIPath)
-	res, err := pullLocal.Pull(ctx, imagecopy.PullArgs{
+	res, err := pullLocal.Pull(ctx, ociimagecopy.PullArgs{
 		Images:            []string{e.imageRef()},
 		AssumeLocalHasSet: map[string]struct{}{},
 	}, remote)
@@ -1150,7 +1150,7 @@ func TestE2E_LocalDirRemote_PushPull(t *testing.T) {
 	ctx := context.Background()
 
 	// ── Push to local-directory remote ──
-	local, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+	local, err := ociimagecopy.NewLocal(ctx, ociimagecopy.LocalConfig{
 		BaseDir:   localBase,
 		Transport: skopeo.TransportOci,
 		OCIPath:   fixture.srcDir,
@@ -1159,13 +1159,13 @@ func TestE2E_LocalDirRemote_PushPull(t *testing.T) {
 		t.Fatalf("NewLocal: %v", err)
 	}
 
-	remote, err := imagecopy.NewLocalDirRemote(remoteDirPath)
+	remote, err := ociimagecopy.NewLocalDirRemote(remoteDirPath)
 	if err != nil {
 		t.Fatalf("NewLocalDirRemote: %v", err)
 	}
 	t.Cleanup(func() { _ = remote.Close() })
 
-	pushRes, err := local.Push(ctx, imagecopy.PushArgs{
+	pushRes, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{imageRef},
 	}, remote)
 	if err != nil {
@@ -1186,7 +1186,7 @@ func TestE2E_LocalDirRemote_PushPull(t *testing.T) {
 	pullLocalBase := filepath.Join(tmp, "pull-local-base")
 	must(t, os.MkdirAll(pullLocalBase, 0o755))
 
-	pullLocal, err := imagecopy.NewLocal(ctx, imagecopy.LocalConfig{
+	pullLocal, err := ociimagecopy.NewLocal(ctx, ociimagecopy.LocalConfig{
 		BaseDir:   pullLocalBase,
 		Transport: skopeo.TransportOci,
 		OCIPath:   fixture.srcDir,
@@ -1195,13 +1195,13 @@ func TestE2E_LocalDirRemote_PushPull(t *testing.T) {
 		t.Fatalf("NewLocal for pull: %v", err)
 	}
 
-	pullRemote, err := imagecopy.NewLocalDirRemote(remoteDirPath)
+	pullRemote, err := ociimagecopy.NewLocalDirRemote(remoteDirPath)
 	if err != nil {
 		t.Fatalf("NewLocalDirRemote for pull: %v", err)
 	}
 	t.Cleanup(func() { _ = pullRemote.Close() })
 
-	pullRes, err := pullLocal.Pull(ctx, imagecopy.PullArgs{
+	pullRes, err := pullLocal.Pull(ctx, ociimagecopy.PullArgs{
 		Images:            []string{imageRef},
 		AssumeLocalHasSet: map[string]struct{}{},
 	}, pullRemote)

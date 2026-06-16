@@ -95,24 +95,33 @@ const DefaultLocalParallelism = 4
 
 // DefaultCompressionFormat and DefaultCompressionLevel are applied to every
 // skopeo copy operation created by this package unless explicitly overridden.
+// The default also forces recompression (see [CompressionConfig.Force]) so the
+// zstd-level-20 default actually applies to already-gzip source layers instead
+// of leaving them untouched.
 const (
 	DefaultCompressionFormat = "zstd"
 	DefaultCompressionLevel  = 20
 )
 
 // CompressionConfig configures skopeo destination compression for copy
-// operations. When both fields are empty, the package default pair is used.
-// Supplying either field opts out of defaulting the other, because compression
-// levels are algorithm-specific.
+// operations. When Format and Level are both zero, the package default
+// (zstd level 20, with Force on) is used. Supplying Format or Level opts out of
+// defaulting the others, because compression levels are algorithm-specific.
 type CompressionConfig struct {
 	Format string
 	Level  int
+	// Force recompresses layers that are already compressed in another format
+	// (e.g. gzip) into Format, rather than copying them through unchanged. The
+	// default config sets this true; without it skopeo would leave already-gzip
+	// layers as gzip even though --dest-compress-format zstd is set.
+	Force bool
 }
 
 func applyCompressionDefaults(cfg CompressionConfig) CompressionConfig {
 	if cfg.Format == "" && cfg.Level == 0 {
 		cfg.Format = DefaultCompressionFormat
 		cfg.Level = DefaultCompressionLevel
+		cfg.Force = true
 	}
 	return cfg
 }
@@ -122,6 +131,7 @@ func newSkopeoWithCompression(invoker cli.Invoker, cfg CompressionConfig) *skope
 	s := skopeo.NewSkopeo(invoker)
 	s.CompressionFormat = cfg.Format
 	s.CompressionLevel = cfg.Level
+	s.ForceCompression = cfg.Force
 	return s
 }
 
@@ -135,7 +145,8 @@ func newSkopeoWithCompression(invoker cli.Invoker, cfg CompressionConfig) *skope
 //     pull) returns an error for it.
 //   - OCIPath is required when Transport == [skopeo.TransportOci].
 //   - Compression controls skopeo copy destination compression. When unset, it
-//     defaults to zstd level 20.
+//     defaults to zstd level 20 and forces recompression of already-compressed
+//     (e.g. gzip) source layers into zstd.
 type LocalConfig struct {
 	BaseDir     string
 	Transport   skopeo.Transport

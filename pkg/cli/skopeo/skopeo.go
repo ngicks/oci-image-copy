@@ -81,6 +81,13 @@ type Skopeo struct {
 	// operation when non-zero. Range is format-specific; consult
 	// skopeo and the underlying compressor for valid values.
 	CompressionLevel int
+	// ForceCompression adds `--dest-force-compress-format` on every copy when
+	// true (and only when CompressionFormat is set, which that flag requires).
+	// Without it skopeo copies layers that are already compressed in another
+	// format (e.g. gzip from the source) through unchanged, so CompressionFormat
+	// only governs layers skopeo itself compresses. Forcing recompresses every
+	// layer into CompressionFormat — more CPU, and it changes layer digests.
+	ForceCompression bool
 }
 
 // NewSkopeo returns a [Skopeo] driving inv (executable "skopeo").
@@ -166,6 +173,12 @@ func (s *Skopeo) compressionArgs() []string {
 	var args []string
 	if s.CompressionFormat != "" {
 		args = append(args, "--dest-compress-format", s.CompressionFormat)
+		// --dest-force-compress-format requires --dest-compress-format, so it is
+		// only emitted alongside one. It makes skopeo recompress already-compressed
+		// (e.g. gzip) layers into CompressionFormat instead of passing them through.
+		if s.ForceCompression {
+			args = append(args, "--dest-force-compress-format")
+		}
 	}
 	if s.CompressionLevel != 0 {
 		args = append(args, "--dest-compress-level", strconv.Itoa(s.CompressionLevel))

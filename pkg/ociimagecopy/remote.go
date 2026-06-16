@@ -109,7 +109,8 @@ type Remote interface {
 //   - OCIPath is required when Transport == [skopeo.TransportOci];
 //     it is the absolute path on the peer where the OCI store lives.
 //   - Compression controls skopeo copy destination compression. When unset, it
-//     defaults to zstd level 20.
+//     defaults to zstd level 20 and forces recompression of already-compressed
+//     (e.g. gzip) source layers into zstd.
 type RemoteConfig struct {
 	Target      ssh.Target
 	Transport   skopeo.Transport

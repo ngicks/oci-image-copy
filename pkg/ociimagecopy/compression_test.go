@@ -19,6 +19,9 @@ func TestNewSkopeoWithCompression_Defaults(t *testing.T) {
 	if sk.CompressionLevel != DefaultCompressionLevel {
 		t.Errorf("CompressionLevel = %d, want %d", sk.CompressionLevel, DefaultCompressionLevel)
 	}
+	if !sk.ForceCompression {
+		t.Error("ForceCompression = false, want true (default must force already-gzip layers to zstd)")
+	}
 }
 
 func TestNewSkopeoWithCompression_Override(t *testing.T) {
@@ -34,6 +37,9 @@ func TestNewSkopeoWithCompression_Override(t *testing.T) {
 	}
 	if sk.CompressionLevel != 9 {
 		t.Errorf("CompressionLevel = %d, want 9", sk.CompressionLevel)
+	}
+	if sk.ForceCompression {
+		t.Error("ForceCompression = true, want false (explicit override must not silently force recompression)")
 	}
 }
 
@@ -73,5 +79,8 @@ func TestNewLocal_DefaultCompression(t *testing.T) {
 	}
 	if sk.CompressionLevel != DefaultCompressionLevel {
 		t.Errorf("CompressionLevel = %d, want %d", sk.CompressionLevel, DefaultCompressionLevel)
+	}
+	if !sk.ForceCompression {
+		t.Error("ForceCompression = false, want true for a default NewLocal")
 	}
 }

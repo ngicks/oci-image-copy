@@ -265,6 +265,54 @@ func TestSkopeo_CompressionArgs(t *testing.T) {
 	}
 }
 
+func TestSkopeo_CompressionArgs_Force(t *testing.T) {
+	t.Parallel()
+	r := &stubInvoker{}
+	s := newSkopeo(r)
+	s.CompressionFormat = "zstd"
+	s.CompressionLevel = 20
+	s.ForceCompression = true
+	src := TransportRef{Transport: TransportContainersStorage, Arg1: "ghcr.io/a/b:c"}
+	dst := TransportRef{Transport: TransportOci, Arg1: "/tmp/oci/_tags/c", Arg2: "ghcr.io/a/b:c"}
+	if err := s.Copy(context.Background(), src, dst, "/tmp/share"); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{
+			"skopeo", "copy",
+			"--dest-compress-format", "zstd",
+			"--dest-force-compress-format",
+			"--dest-compress-level", "20",
+			"--dest-shared-blob-dir", "/tmp/share",
+			"containers-storage:ghcr.io/a/b:c",
+			"oci:/tmp/oci/_tags/c:ghcr.io/a/b:c",
+		},
+	}
+	if !reflect.DeepEqual(r.got, want) {
+		t.Errorf("argv mismatch:\n got: %v\nwant: %v", r.got, want)
+	}
+}
+
+// TestSkopeo_ForceCompressFormat_RequiresFormat documents that the force flag is
+// only emitted alongside --dest-compress-format; setting it without a format is
+// a no-op rather than producing an invalid skopeo invocation.
+func TestSkopeo_ForceCompressFormat_RequiresFormat(t *testing.T) {
+	t.Parallel()
+	r := &stubInvoker{}
+	s := newSkopeo(r)
+	s.ForceCompression = true // no CompressionFormat set
+	src := TransportRef{Transport: TransportContainersStorage, Arg1: "ghcr.io/a/b:c"}
+	dst := TransportRef{Transport: TransportOci, Arg1: "/tmp/oci/_tags/c", Arg2: "ghcr.io/a/b:c"}
+	if err := s.Copy(context.Background(), src, dst, "/tmp/share"); err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range r.got[0] {
+		if arg == "--dest-force-compress-format" {
+			t.Fatalf("force flag emitted without --dest-compress-format: %v", r.got[0])
+		}
+	}
+}
+
 func TestSkopeo_PropagatesRunnerError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("simulated runner error")

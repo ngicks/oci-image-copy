@@ -32,6 +32,7 @@ import (
 	"github.com/ngicks/oci-image-copy/pkg/cli/ssh"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy/remote"
 )
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -610,7 +611,7 @@ func (e *testEnv) makeLocal(ctx context.Context) *ociimagecopy.Local {
 // for oci transport with an explicit OCIPath inside the remote temp dir.
 func (e *testEnv) makeRemote(ctx context.Context, remoteOCIPath string) ociimagecopy.Remote {
 	e.t.Helper()
-	remote, err := ociimagecopy.NewRemote(ctx, ociimagecopy.RemoteConfig{
+	remote, err := remote.NewSSH(ctx, remote.SSHConfig{
 		Target:    e.sshSrv.target(),
 		Transport: skopeo.TransportOci,
 		OCIPath:   remoteOCIPath,
@@ -1159,15 +1160,15 @@ func TestE2E_LocalDirRemote_PushPull(t *testing.T) {
 		t.Fatalf("NewLocal: %v", err)
 	}
 
-	remote, err := ociimagecopy.NewLocalDirRemote(remoteDirPath)
+	pushRemote, err := remote.NewLocalDir(remoteDirPath)
 	if err != nil {
-		t.Fatalf("NewLocalDirRemote: %v", err)
+		t.Fatalf("NewLocalDir: %v", err)
 	}
-	t.Cleanup(func() { _ = remote.Close() })
+	t.Cleanup(func() { _ = pushRemote.Close() })
 
 	pushRes, err := local.Push(ctx, ociimagecopy.PushArgs{
 		Images: []string{imageRef},
-	}, remote)
+	}, pushRemote)
 	if err != nil {
 		t.Fatalf("Push to local-dir remote: %v", err)
 	}
@@ -1195,9 +1196,9 @@ func TestE2E_LocalDirRemote_PushPull(t *testing.T) {
 		t.Fatalf("NewLocal for pull: %v", err)
 	}
 
-	pullRemote, err := ociimagecopy.NewLocalDirRemote(remoteDirPath)
+	pullRemote, err := remote.NewLocalDir(remoteDirPath)
 	if err != nil {
-		t.Fatalf("NewLocalDirRemote for pull: %v", err)
+		t.Fatalf("NewLocalDir for pull: %v", err)
 	}
 	t.Cleanup(func() { _ = pullRemote.Close() })
 

@@ -159,7 +159,7 @@ func TestHasAuthorizationHeader(t *testing.T) {
 // Remote from the given spec string and opts, then extracts the Authorization
 // header value the spec would have received. It calls buildRemote and inspects
 // the constructed spec by re-parsing — since the headers are set on
-// FileServerRemoteSpec before NewFileServerRemoteFromSpec is called, we instead
+// FileServerRemoteSpec before remote.NewFileServerFromSpec is called, we instead
 // exercise the merging logic directly through fileServerOpts.
 //
 // Because buildRemote dials the real factory (which succeeds for a file-server

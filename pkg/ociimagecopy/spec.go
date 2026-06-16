@@ -19,7 +19,7 @@ package ociimagecopy
 //	        ssh://host/containers-storage:
 //	        ssh://user@host:2222/oci:/srv/oci
 //	        ssh://host/docker-daemon:
-//	  file-server:<url>            (fully implemented; see NewFileServerRemoteFromSpec)
+//	  file-server:<url>            (fully implemented; see remote.NewFileServerFromSpec)
 //	  oci:/path/to/base/dir        (local-directory remote)
 
 import (
@@ -107,7 +107,7 @@ type SSHRemoteSpec struct {
 }
 
 // FileServerRemoteSpec holds the parsed file-server remote components.
-// The factory [NewFileServerRemoteFromSpec] constructs a fully functional
+// The factory remote.NewFileServerFromSpec constructs a fully functional
 // file-server Remote from this spec, wiring the HTTP client, headers, naming
 // convention, and chunk size.
 type FileServerRemoteSpec struct {
@@ -158,7 +158,7 @@ type RemoteSpec struct {
 //	      ssh://host                          → containers-storage: default
 //
 //	file-server:<url>
-//	    Fully implemented. [NewFileServerRemoteFromSpec] constructs the Remote.
+//	    Fully implemented. remote.NewFileServerFromSpec constructs the Remote.
 //	    Companion flags (merged into the spec by the CLI layer):
 //	      --remote-header 'Name: value'  (repeatable; values redacted in logs)
 //	      --remote-chunk-size            (default 100 MiB)

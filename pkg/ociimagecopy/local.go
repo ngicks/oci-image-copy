@@ -73,7 +73,7 @@ func DumpArgv(
 // [vroot.Fs[vroot.File]] rooted at BaseDir. Build via [NewLocal].
 //
 // [Local.Push] and [Local.Pull] drive a transfer against any [Remote]
-// (typically the SSH-backed implementation from [NewRemote]).
+// (typically the SSH-backed implementation in package remote).
 type Local struct {
 	baseDir   string
 	transport skopeo.Transport
@@ -126,7 +126,12 @@ func applyCompressionDefaults(cfg CompressionConfig) CompressionConfig {
 	return cfg
 }
 
-func newSkopeoWithCompression(invoker cli.Invoker, cfg CompressionConfig) *skopeo.Skopeo {
+// NewSkopeoWithCompression builds a [*skopeo.Skopeo] over invoker with the
+// destination compression settings from cfg applied (defaulting to zstd level
+// 20 with forced recompression when cfg is the zero value). It is shared by the
+// local endpoint and the SSH-backed remote so their skopeo configuration cannot
+// diverge.
+func NewSkopeoWithCompression(invoker cli.Invoker, cfg CompressionConfig) *skopeo.Skopeo {
 	cfg = applyCompressionDefaults(cfg)
 	s := skopeo.NewSkopeo(invoker)
 	s.CompressionFormat = cfg.Format
@@ -204,7 +209,7 @@ func NewLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 		baseDir:   base,
 		transport: cfg.Transport,
 		ociPath:   cfg.OCIPath,
-		skopeoCli: newSkopeoWithCompression(cli.NewLocalInvoker(), cfg.Compression),
+		skopeoCli: NewSkopeoWithCompression(cli.NewLocalInvoker(), cfg.Compression),
 		fs:        fs,
 		dirs:      NewFsOciDirs(fs, DefaultLocalParallelism),
 	}

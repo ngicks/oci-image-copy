@@ -44,6 +44,7 @@ import (
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy/fileserver"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy/remote"
 	godigest "github.com/opencontainers/go-digest"
 )
 
@@ -260,7 +261,7 @@ func newFSRemote(
 		BaseURL: u,
 		Client:  srv.Client(),
 	}
-	r := ociimagecopy.NewFileServerRemote(ociimagecopy.FileServerRemoteConfig{
+	r := remote.NewFileServer(remote.FileServerConfig{
 		Client:    c,
 		Naming:    fileserver.DefaultNaming{},
 		ChunkSize: chunkSize,

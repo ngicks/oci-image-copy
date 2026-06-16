@@ -132,11 +132,11 @@ func (f *fakeRemote) ListBlobs(ctx context.Context) iter.Seq2[digest.Digest, err
 			}
 		}
 	}
-	return listBlobsFromFs(ctx, f.fs)
+	return ListBlobsFromFs(ctx, f.fs)
 }
 
 func (f *fakeRemote) ListImages(ctx context.Context) iter.Seq2[imageref.ImageRef, error] {
-	return listImagesFromFs(ctx, f.fs)
+	return ListImagesFromFs(ctx, f.fs)
 }
 
 func (f *fakeRemote) LoadImage(ctx context.Context, ref imageref.ImageRef) error {

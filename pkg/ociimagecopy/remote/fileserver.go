@@ -1,6 +1,6 @@
-package ociimagecopy
+package remote
 
-// fileserver_remote.go implements the file-server Remote variant
+// fileserver.go implements the file-server Remote variant
 // (--remote file-server:<url>).
 //
 // Design (per PLAN3-fileserver-remote.md):
@@ -11,10 +11,9 @@ package ociimagecopy
 //   commit marker. A crash mid-push leaves at most orphan chunks (harmless for
 //   content-addressed names), never a meta referencing missing chunks.
 //
-//   The implementation lives in the imagecopy package (alongside localdir_remote.go
-//   and the ssh remote) to avoid import cycles: the Remote/OciDirs interfaces are
-//   defined here, and pkg/ociimagecopy/fileserver (naming, meta, adapters) is a
-//   dependency-only sub-package with no back-reference.
+//   The Remote/OciDirs interfaces are defined in package ociimagecopy; the
+//   chunked naming/meta/adapters live in pkg/ociimagecopy/fileserver. This file
+//   ties them together, depending on both with no back-reference from either.
 //
 // Limitations (documented per PLAN3):
 //   - ListImages: not supported (no global index on the server).
@@ -40,14 +39,16 @@ import (
 	fsfileserver "github.com/ngicks/go-fsys-helper/stream/fileserver"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
 	"github.com/ngicks/oci-image-copy/pkg/ocidir"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy/fileserver"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// Compile-time check: [*fileServerRemote] satisfies [Remote] and [OciDirs].
-var _ Remote = (*fileServerRemote)(nil)
-var _ OciDirs = (*fileServerRemote)(nil)
+// Compile-time check: [*fileServerRemote] satisfies [ociimagecopy.Remote] and
+// [ociimagecopy.OciDirs].
+var _ ociimagecopy.Remote = (*fileServerRemote)(nil)
+var _ ociimagecopy.OciDirs = (*fileServerRemote)(nil)
 
 // blobMetaInfo records the size and chunk size for a blob derived from a
 // consulted image meta.
@@ -56,8 +57,9 @@ type blobMetaInfo struct {
 	chunkSize int64
 }
 
-// fileServerRemote implements [Remote] and [OciDirs] over a generic HTTP
-// file server. SSH-remote uses SFTP; this uses HTTP GET/HEAD/PUT.
+// fileServerRemote implements [ociimagecopy.Remote] and [ociimagecopy.OciDirs]
+// over a generic HTTP file server. SSH-remote uses SFTP; this uses HTTP
+// GET/HEAD/PUT.
 //
 // Thread safety: the struct is safe for concurrent use between different image
 // refs. Per-image state (tagFileAccum) is protected by mu.
@@ -84,27 +86,28 @@ type fsTagFileState struct {
 	indexJSON []byte
 }
 
-// FileServerRemoteConfig configures [NewFileServerRemote].
-type FileServerRemoteConfig struct {
+// FileServerConfig configures [NewFileServer].
+type FileServerConfig struct {
 	// Client is the underlying file-server client (e.g. *fsfileserver.HTTPClient).
 	// Required.
 	Client fsfileserver.Client
 	// Naming maps OCI-level requests to object names. Defaults to
 	// fileserver.DefaultNaming{} when nil.
 	Naming fileserver.NamingConvention
-	// ChunkSize is the upload chunk size in bytes. Defaults to DefaultChunkSize.
+	// ChunkSize is the upload chunk size in bytes. Defaults to
+	// [ociimagecopy.DefaultChunkSize].
 	ChunkSize int64
 	// ReadOnly disables all mutating operations.
 	ReadOnly bool
 }
 
-// NewFileServerRemote constructs a file-server [Remote].
-func NewFileServerRemote(cfg FileServerRemoteConfig) Remote {
+// NewFileServer constructs a file-server [ociimagecopy.Remote].
+func NewFileServer(cfg FileServerConfig) ociimagecopy.Remote {
 	if cfg.Naming == nil {
 		cfg.Naming = fileserver.DefaultNaming{}
 	}
 	if cfg.ChunkSize <= 0 {
-		cfg.ChunkSize = DefaultChunkSize
+		cfg.ChunkSize = ociimagecopy.DefaultChunkSize
 	}
 	return &fileServerRemote{
 		client:        cfg.Client,
@@ -116,9 +119,10 @@ func NewFileServerRemote(cfg FileServerRemoteConfig) Remote {
 	}
 }
 
-// NewFileServerRemoteFromSpec constructs a file-server [Remote] from a
-// [FileServerRemoteSpec]. This is the factory called by the CLI wiring.
-func NewFileServerRemoteFromSpec(spec *FileServerRemoteSpec) (Remote, error) {
+// NewFileServerFromSpec constructs a file-server [ociimagecopy.Remote] from a
+// [ociimagecopy.FileServerRemoteSpec]. This is the factory called by the CLI
+// wiring.
+func NewFileServerFromSpec(spec *ociimagecopy.FileServerRemoteSpec) (ociimagecopy.Remote, error) {
 	hdr := make(http.Header)
 	for _, h := range spec.Headers {
 		name, val, ok := splitHeaderPair(h)
@@ -127,7 +131,7 @@ func NewFileServerRemoteFromSpec(spec *FileServerRemoteSpec) (Remote, error) {
 			// (e.g. a bare token with no name), so never echo it verbatim.
 			return nil, fmt.Errorf(
 				"file-server: invalid header %q (expected 'Name: value')",
-				RedactHeader(h),
+				ociimagecopy.RedactHeader(h),
 			)
 		}
 		hdr.Add(name, val)
@@ -139,7 +143,7 @@ func NewFileServerRemoteFromSpec(spec *FileServerRemoteSpec) (Remote, error) {
 		Client:  &http.Client{},
 	}
 
-	return NewFileServerRemote(FileServerRemoteConfig{
+	return NewFileServer(FileServerConfig{
 		Client:    c,
 		Naming:    fileserver.DefaultNaming{Prefix: spec.NamingPrefix},
 		ChunkSize: spec.ChunkSize,
@@ -163,7 +167,7 @@ func splitHeaderPair(s string) (name, val string, ok bool) {
 
 // --- Remote interface ---
 
-// Close implements [Remote].
+// Close implements [ociimagecopy.Remote].
 // When the underlying client is an [*fsfileserver.HTTPClient] and its inner
 // Doer implements CloseIdleConnections, idle HTTP connections are released.
 func (r *fileServerRemote) Close() error {
@@ -175,13 +179,14 @@ func (r *fileServerRemote) Close() error {
 	return nil
 }
 
-// ReadOnly implements [Remote].
+// ReadOnly implements [ociimagecopy.Remote].
 func (r *fileServerRemote) ReadOnly() bool { return r.readOnly }
 
-// Dir implements [Remote]. Returns self — fileServerRemote also implements OciDirs.
-func (r *fileServerRemote) Dir() OciDirs { return r }
+// Dir implements [ociimagecopy.Remote]. Returns self — fileServerRemote also
+// implements OciDirs.
+func (r *fileServerRemote) Dir() ociimagecopy.OciDirs { return r }
 
-// ListBlobs implements [Remote].
+// ListBlobs implements [ociimagecopy.Remote].
 //
 // Returns the union of descriptors from metas consulted in this run.
 // Blobs belonging to images not accessed in this session are not reported.
@@ -202,7 +207,7 @@ func (r *fileServerRemote) ListBlobs(_ context.Context) iter.Seq2[digest.Digest,
 	}
 }
 
-// ListImages implements [Remote].
+// ListImages implements [ociimagecopy.Remote].
 // Always returns an error: file-server remotes have no global index.
 func (r *fileServerRemote) ListImages(_ context.Context) iter.Seq2[imageref.ImageRef, error] {
 	err := errors.New(
@@ -215,19 +220,19 @@ func (r *fileServerRemote) ListImages(_ context.Context) iter.Seq2[imageref.Imag
 	}
 }
 
-// LoadImage implements [Remote]. No-op: the file server IS the store;
-// there is no separate live container runtime to load into.
+// LoadImage implements [ociimagecopy.Remote]. No-op: the file server IS the
+// store; there is no separate live container runtime to load into.
 func (r *fileServerRemote) LoadImage(_ context.Context, _ imageref.ImageRef) error {
 	return nil
 }
 
-// DumpImage implements [Remote]. No-op: the file server IS the store;
-// there is no separate live storage to dump from.
+// DumpImage implements [ociimagecopy.Remote]. No-op: the file server IS the
+// store; there is no separate live storage to dump from.
 func (r *fileServerRemote) DumpImage(_ context.Context, _ imageref.ImageRef) error {
 	return nil
 }
 
-// InspectImage implements [Remote].
+// InspectImage implements [ociimagecopy.Remote].
 //
 // Fetches the per-image metadata, identifies the manifest descriptor (first
 // entry in Descriptors), reads the manifest blob bytes via ChunkedSource,
@@ -328,8 +333,9 @@ var ErrMultiChunkBlobUnsupported = errors.New(
 	"file-server: meta-less Blob accessor cannot serve a multi-chunk blob; use BlobSource",
 )
 
-// Blob implements [OciDirs]. Reads chunk 0 directly for size detection.
-// This method is primarily used by InspectImage's fallback and ocidir.ReadManifest.
+// Blob implements [ociimagecopy.OciDirs]. Reads chunk 0 directly for size
+// detection. This method is primarily used by InspectImage's fallback and
+// ocidir.ReadManifest.
 //
 // Without a meta the total size is unknown up front, so this accessor can only
 // honestly serve single-chunk blobs. If a second chunk exists, the blob is
@@ -359,14 +365,14 @@ func (r *fileServerRemote) Blob(
 	return rc, total, nil
 }
 
-// Image implements [OciDirs].
+// Image implements [ociimagecopy.OciDirs].
 // Returns a [fsMetaDirV1] view that serves index.json and oci-layout verbatim
 // from the per-image meta, and reads blobs via ChunkedSource.
 func (r *fileServerRemote) Image(ref imageref.ImageRef) ocidir.DirV1 {
 	return &fsMetaDirV1{remote: r, ref: ref}
 }
 
-// BlobSource implements [OciDirs] (pull direction).
+// BlobSource implements [ociimagecopy.OciDirs] (pull direction).
 // Returns a [fsutil.ResumableSource] backed by ChunkedSource.
 // Uses the chunkSize recorded in the consulted meta when available, falling
 // back to the remote's configured chunkSize otherwise.
@@ -384,25 +390,25 @@ func (r *fileServerRemote) BlobSource(
 	return fileserver.NewChunkedSourceAdapter(r.client, r.naming, dgst, size, chunkSize), nil
 }
 
-// BlobSink implements [OciDirs] (push direction).
+// BlobSink implements [ociimagecopy.OciDirs] (push direction).
 // Returns a [fsutil.ResumableSink] backed by ChunkedSink.
-// Returns [ErrReadOnly] when the remote is read-only.
+// Returns [ociimagecopy.ErrReadOnly] when the remote is read-only.
 func (r *fileServerRemote) BlobSink(
 	_ context.Context,
 	dgst digest.Digest,
 	size int64,
 ) (fsutil.ResumableSink, error) {
 	if r.readOnly {
-		return nil, ErrReadOnly
+		return nil, ociimagecopy.ErrReadOnly
 	}
 	return fileserver.NewChunkedSinkAdapter(r.client, r.naming, dgst, size, r.chunkSize), nil
 }
 
-// MkdirBlobParent implements [OciDirs]. No-op: the file server has no
-// directory hierarchy — objects are flat-named by key.
+// MkdirBlobParent implements [ociimagecopy.OciDirs]. No-op: the file server has
+// no directory hierarchy — objects are flat-named by key.
 func (r *fileServerRemote) MkdirBlobParent(_ digest.Digest) error { return nil }
 
-// PutTagFile implements [OciDirs].
+// PutTagFile implements [ociimagecopy.OciDirs].
 //
 // Accumulates oci-layout and index.json per ref in memory. When both are
 // present the meta is assembled (descriptor closure derived from the uploaded
@@ -422,7 +428,7 @@ func (r *fileServerRemote) PutTagFile(
 	data []byte,
 ) error {
 	if r.readOnly {
-		return ErrReadOnly
+		return ociimagecopy.ErrReadOnly
 	}
 	if name != "oci-layout" && name != "index.json" {
 		return fmt.Errorf(
@@ -667,25 +673,12 @@ func (d *fsMetaDirV1) Blob(
 
 // --- RefPrimer / BlobProber optional interfaces ---
 
-// RefPrimer is an optional interface that a Remote's OciDirs may implement
-// to pre-load remote metadata for the refs being pushed, enabling accurate
-// dry-run plans and push remote-has resolution.
-type RefPrimer interface {
-	PrimeRefs(ctx context.Context, refs []imageref.ImageRef) error
-}
+// Compile-time checks: fileServerRemote satisfies both optional interfaces
+// (defined in package ociimagecopy, consumed by the push orchestrator).
+var _ ociimagecopy.RefPrimer = (*fileServerRemote)(nil)
+var _ ociimagecopy.BlobProber = (*fileServerRemote)(nil)
 
-// BlobProber is an optional interface that a Remote's OciDirs may implement
-// to probe individual blobs for existence (via HEAD chunk probe).
-// Returns true if the blob is complete on the remote.
-type BlobProber interface {
-	ProbeBlob(ctx context.Context, dgst digest.Digest, size int64) (bool, error)
-}
-
-// Compile-time checks: fileServerRemote satisfies both optional interfaces.
-var _ RefPrimer = (*fileServerRemote)(nil)
-var _ BlobProber = (*fileServerRemote)(nil)
-
-// PrimeRefs implements [RefPrimer].
+// PrimeRefs implements [ociimagecopy.RefPrimer].
 //
 // For each ref it fetches the image meta to load chunkSize information into
 // blobsFromMeta for use by BlobSource and ProbeBlob.
@@ -710,7 +703,7 @@ func (r *fileServerRemote) PrimeRefs(ctx context.Context, refs []imageref.ImageR
 	return nil
 }
 
-// ProbeBlob implements [BlobProber].
+// ProbeBlob implements [ociimagecopy.BlobProber].
 // Creates a ChunkedSinkAdapter with the known (or fallback) chunkSize and
 // calls State to determine whether the blob is already fully present on the
 // remote. Returns true if the blob is complete.

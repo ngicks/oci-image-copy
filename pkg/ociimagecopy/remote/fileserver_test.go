@@ -1,12 +1,12 @@
-package ociimagecopy
+package remote
 
-// fileserver_remote_test.go unit-tests the fileServerRemote implementation.
+// fileserver_test.go unit-tests the fileServerRemote implementation.
 // Scenarios covered:
 //   - PutTagFile accumulation: meta Put happens exactly once, after both
 //     files, with correct descriptors.
 //   - ListImages: always returns an error.
 //   - InspectImage: reads manifest blob; sha256(returned bytes)==manifest digest.
-//   - ReadOnly: PutTagFile / BlobSink return ErrReadOnly.
+//   - ReadOnly: PutTagFile / BlobSink return ociimagecopy.ErrReadOnly.
 //   - Close: no error.
 //   - ListBlobs: derived from consulted metas.
 //   - MkdirBlobParent: no-op.
@@ -26,6 +26,7 @@ import (
 	fsfileserver "github.com/ngicks/go-fsys-helper/stream/fileserver"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
 	"github.com/ngicks/oci-image-copy/pkg/ocidir"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy/fileserver"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -79,7 +80,7 @@ var _ fsfileserver.Client = (*fsTestClient)(nil)
 // ---- helpers ----
 
 func newFSRemoteFromCfg(c *fsTestClient, chunkSize int64) *fileServerRemote {
-	return NewFileServerRemote(FileServerRemoteConfig{
+	return NewFileServer(FileServerConfig{
 		Client:    c,
 		Naming:    fileserver.DefaultNaming{},
 		ChunkSize: chunkSize,
@@ -87,7 +88,7 @@ func newFSRemoteFromCfg(c *fsTestClient, chunkSize int64) *fileServerRemote {
 }
 
 func newFSRemoteReadOnly(c *fsTestClient) *fileServerRemote {
-	return NewFileServerRemote(FileServerRemoteConfig{
+	return NewFileServer(FileServerConfig{
 		Client:   c,
 		ReadOnly: true,
 	}).(*fileServerRemote)
@@ -170,7 +171,7 @@ func buildIndexJSON(t *testing.T, mDgst digest.Digest, mSize int64) []byte {
 
 func TestFileServerRemote_ReadOnly_False(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
 	if r.ReadOnly() {
 		t.Error("ReadOnly() = true, want false")
 	}
@@ -178,7 +179,7 @@ func TestFileServerRemote_ReadOnly_False(t *testing.T) {
 
 func TestFileServerRemote_Close_NoOp(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
 	if err := r.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestFileServerRemote_Close_NoOp(t *testing.T) {
 
 func TestFileServerRemote_ListImages_Error(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
 	for _, err := range r.ListImages(context.Background()) {
 		if err == nil {
 			t.Error("ListImages: expected error, got nil")
@@ -198,7 +199,7 @@ func TestFileServerRemote_ListImages_Error(t *testing.T) {
 
 func TestFileServerRemote_LoadImage_NoOp(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
 	ref, _ := imageref.Parse("example.com/repo:v1")
 	if err := r.LoadImage(context.Background(), ref); err != nil {
 		t.Errorf("LoadImage: %v", err)
@@ -207,7 +208,7 @@ func TestFileServerRemote_LoadImage_NoOp(t *testing.T) {
 
 func TestFileServerRemote_DumpImage_NoOp(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
 	ref, _ := imageref.Parse("example.com/repo:v1")
 	if err := r.DumpImage(context.Background(), ref); err != nil {
 		t.Errorf("DumpImage: %v", err)
@@ -216,7 +217,7 @@ func TestFileServerRemote_DumpImage_NoOp(t *testing.T) {
 
 func TestFileServerRemote_MkdirBlobParent_NoOp(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
 	dgst := digest.SHA256.FromBytes([]byte("test"))
 	if err := r.MkdirBlobParent(dgst); err != nil {
 		t.Errorf("MkdirBlobParent: %v", err)
@@ -401,25 +402,25 @@ func TestFileServerRemote_PutTagFile_NoCrossImageLeak(t *testing.T) {
 	}
 }
 
-// TestFileServerRemote_ReadOnly_PutTagFile verifies PutTagFile returns ErrReadOnly.
+// TestFileServerRemote_ReadOnly_PutTagFile verifies PutTagFile returns ociimagecopy.ErrReadOnly.
 func TestFileServerRemote_ReadOnly_PutTagFile(t *testing.T) {
 	t.Parallel()
 	r := newFSRemoteReadOnly(newFSTestClient())
 	ref, _ := imageref.Parse("example.com/repo:v1")
 	err := r.PutTagFile(context.Background(), ref, "oci-layout", []byte("{}"))
-	if err != ErrReadOnly {
-		t.Errorf("PutTagFile on read-only: got %v, want ErrReadOnly", err)
+	if err != ociimagecopy.ErrReadOnly {
+		t.Errorf("PutTagFile on read-only: got %v, want ociimagecopy.ErrReadOnly", err)
 	}
 }
 
-// TestFileServerRemote_ReadOnly_BlobSink verifies BlobSink returns ErrReadOnly.
+// TestFileServerRemote_ReadOnly_BlobSink verifies BlobSink returns ociimagecopy.ErrReadOnly.
 func TestFileServerRemote_ReadOnly_BlobSink(t *testing.T) {
 	t.Parallel()
 	r := newFSRemoteReadOnly(newFSTestClient())
 	dgst := digest.SHA256.FromBytes([]byte("x"))
 	_, err := r.BlobSink(context.Background(), dgst, 1)
-	if err != ErrReadOnly {
-		t.Errorf("BlobSink on read-only: got %v, want ErrReadOnly", err)
+	if err != ociimagecopy.ErrReadOnly {
+		t.Errorf("BlobSink on read-only: got %v, want ociimagecopy.ErrReadOnly", err)
 	}
 }
 
@@ -593,9 +594,9 @@ func TestFileServerRemote_ListBlobs_FromMeta(t *testing.T) {
 // TestFileServerRemote_Dir_ReturnsSelf verifies Dir() returns the remote itself.
 func TestFileServerRemote_Dir_ReturnsSelf(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
 	d := r.Dir()
-	if d != OciDirs(r) {
+	if d != ociimagecopy.OciDirs(r) {
 		t.Error("Dir() did not return self")
 	}
 }
@@ -781,19 +782,19 @@ func TestFileServerRemote_PrimeRefs(t *testing.T) {
 	}
 }
 
-// TestNewFileServerRemoteFromSpec_MalformedHeaderRedacted verifies that a
+// TestNewFileServerFromSpec_MalformedHeaderRedacted verifies that a
 // malformed --remote-header (no colon, so it may be a bare secret) is reported
 // with the value redacted rather than echoed verbatim.
-func TestNewFileServerRemoteFromSpec_MalformedHeaderRedacted(t *testing.T) {
+func TestNewFileServerFromSpec_MalformedHeaderRedacted(t *testing.T) {
 	t.Parallel()
 
 	secret := "sk-super-secret-token-no-colon"
 	u, _ := url.Parse("http://example.com")
-	spec := &FileServerRemoteSpec{
+	spec := &ociimagecopy.FileServerRemoteSpec{
 		URL:     u,
 		Headers: []string{secret},
 	}
-	_, err := NewFileServerRemoteFromSpec(spec)
+	_, err := NewFileServerFromSpec(spec)
 	if err == nil {
 		t.Fatal("expected error for malformed header, got nil")
 	}
@@ -834,7 +835,7 @@ func TestFileServerRemote_PrimeRefs_PropagatesTransportError(t *testing.T) {
 	t.Parallel()
 
 	boom := errors.New("HTTP 503 service unavailable")
-	r := NewFileServerRemote(FileServerRemoteConfig{
+	r := NewFileServer(FileServerConfig{
 		Client: &errClient{err: boom},
 		Naming: fileserver.DefaultNaming{},
 	}).(*fileServerRemote)
@@ -863,7 +864,7 @@ func TestFileServerRemote_ProbeBlob_PropagatesTransportError(t *testing.T) {
 	t.Parallel()
 
 	boom := errors.New("HTTP 401 unauthorized")
-	r := NewFileServerRemote(FileServerRemoteConfig{
+	r := NewFileServer(FileServerConfig{
 		Client: &errClient{err: boom},
 		Naming: fileserver.DefaultNaming{},
 	}).(*fileServerRemote)

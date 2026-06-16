@@ -37,9 +37,9 @@ func TestFsOciDirs_RoundTrip_Local(t *testing.T) {
 	ctx := context.Background()
 
 	var images int
-	for ref, err := range listImagesFromFs(ctx, fsys) {
+	for ref, err := range ListImagesFromFs(ctx, fsys) {
 		if err != nil {
-			t.Fatalf("listImagesFromFs: %v", err)
+			t.Fatalf("ListImagesFromFs: %v", err)
 		}
 		images++
 		t.Run(ref.String(), func(t *testing.T) {
@@ -111,7 +111,7 @@ func TestFsOciDirs_BlobOffset_Local(t *testing.T) {
 
 	// Pick the first digest we find via ListBlobs.
 	var pick digest.Digest
-	for d, err := range listBlobsFromFs(ctx, fsys) {
+	for d, err := range ListBlobsFromFs(ctx, fsys) {
 		if err != nil {
 			t.Fatal(err)
 		}

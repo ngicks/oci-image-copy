@@ -11,7 +11,7 @@ import (
 func TestNewSkopeoWithCompression_Defaults(t *testing.T) {
 	t.Parallel()
 
-	sk := newSkopeoWithCompression(cli.NewLocalInvoker(), CompressionConfig{})
+	sk := NewSkopeoWithCompression(cli.NewLocalInvoker(), CompressionConfig{})
 
 	if sk.CompressionFormat != DefaultCompressionFormat {
 		t.Errorf("CompressionFormat = %q, want %q", sk.CompressionFormat, DefaultCompressionFormat)
@@ -27,7 +27,7 @@ func TestNewSkopeoWithCompression_Defaults(t *testing.T) {
 func TestNewSkopeoWithCompression_Override(t *testing.T) {
 	t.Parallel()
 
-	sk := newSkopeoWithCompression(cli.NewLocalInvoker(), CompressionConfig{
+	sk := NewSkopeoWithCompression(cli.NewLocalInvoker(), CompressionConfig{
 		Format: "gzip",
 		Level:  9,
 	})
@@ -46,7 +46,7 @@ func TestNewSkopeoWithCompression_Override(t *testing.T) {
 func TestNewSkopeoWithCompression_FormatOnlyDoesNotDefaultLevel(t *testing.T) {
 	t.Parallel()
 
-	sk := newSkopeoWithCompression(cli.NewLocalInvoker(), CompressionConfig{
+	sk := NewSkopeoWithCompression(cli.NewLocalInvoker(), CompressionConfig{
 		Format: "gzip",
 	})
 

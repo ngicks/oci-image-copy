@@ -17,6 +17,22 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
+// RefPrimer is an optional interface that a [Remote]'s [OciDirs] may implement
+// to pre-load remote metadata for the refs being pushed, enabling accurate
+// dry-run plans and push remote-has resolution. The push orchestrator type-
+// asserts the peer's OciDirs against it; implementations live with the concrete
+// remotes (e.g. the file-server remote in package remote).
+type RefPrimer interface {
+	PrimeRefs(ctx context.Context, refs []imageref.ImageRef) error
+}
+
+// BlobProber is an optional interface that a [Remote]'s [OciDirs] may implement
+// to probe individual blobs for existence (via HEAD chunk probe).
+// Returns true if the blob is complete on the remote.
+type BlobProber interface {
+	ProbeBlob(ctx context.Context, dgst digest.Digest, size int64) (bool, error)
+}
+
 // PushArgs configures one [Local.Push] invocation. Flags surfaced via
 // the CLI (`cmd/oci-image-copy/commands/push.go`) map 1:1 to fields
 // on this struct; keep the cobra side a translation layer only.

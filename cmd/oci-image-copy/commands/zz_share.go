@@ -7,6 +7,7 @@ import (
 
 	"github.com/ngicks/oci-image-copy/pkg/cli/ssh"
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy/remote"
 )
 
 // fileServerOpts holds the companion flags for a --remote file-server:...
@@ -74,7 +75,7 @@ func buildRemote(
 	case ociimagecopy.RemoteKindSSH:
 		return buildSSHRemote(ctx, rs.SSH)
 	case ociimagecopy.RemoteKindLocalDir:
-		return ociimagecopy.NewLocalDirRemote(rs.LocalDir.Path)
+		return remote.NewLocalDir(rs.LocalDir.Path)
 	case ociimagecopy.RemoteKindFileServer:
 		spec := rs.FileServer
 		// Merge companion flag values into the spec.
@@ -97,7 +98,7 @@ func buildRemote(
 		if fsOpts.auth != "" && !hasAuthorizationHeader(spec.Headers) {
 			spec.Headers = append(spec.Headers, "Authorization: "+fsOpts.auth)
 		}
-		return ociimagecopy.NewFileServerRemoteFromSpec(spec)
+		return remote.NewFileServerFromSpec(spec)
 	default:
 		return nil, fmt.Errorf("internal: unknown remote kind %v", rs.Kind)
 	}
@@ -136,7 +137,7 @@ func buildSSHRemote(ctx context.Context, spec *ociimagecopy.SSHRemoteSpec) (ocii
 	if err := ssh.Probe(ctx, spec.Target); err != nil {
 		return nil, fmt.Errorf("ssh probe: %w", err)
 	}
-	return ociimagecopy.NewRemote(ctx, ociimagecopy.RemoteConfig{
+	return remote.NewSSH(ctx, remote.SSHConfig{
 		Target:    spec.Target,
 		Transport: spec.Transport,
 		OCIPath:   spec.OCIPath,

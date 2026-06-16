@@ -326,7 +326,7 @@ func TestTransfer_DigestMismatch_RetryRestarts(t *testing.T) {
 	}
 }
 
-// TestBlobEnumeration_ExcludesPartFiles verifies that listBlobsFromFs and
+// TestBlobEnumeration_ExcludesPartFiles verifies that ListBlobsFromFs and
 // unionShareInventory ignore .part and .part.etag files when enumerating
 // the blob inventory.
 func TestBlobEnumeration_ExcludesPartFiles(t *testing.T) {
@@ -354,20 +354,20 @@ func TestBlobEnumeration_ExcludesPartFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Test listBlobsFromFs.
+	// Test ListBlobsFromFs.
 	ctx := context.Background()
 	var found []digest.Digest
-	for d, err := range listBlobsFromFs(ctx, fsys) {
+	for d, err := range ListBlobsFromFs(ctx, fsys) {
 		if err != nil {
-			t.Fatalf("listBlobsFromFs: %v", err)
+			t.Fatalf("ListBlobsFromFs: %v", err)
 		}
 		found = append(found, d)
 	}
 	if len(found) != 1 {
-		t.Errorf("listBlobsFromFs: expected 1 blob, got %d: %v", len(found), found)
+		t.Errorf("ListBlobsFromFs: expected 1 blob, got %d: %v", len(found), found)
 	}
 	if len(found) > 0 && found[0] != digest.Digest("sha256:"+realHex) {
-		t.Errorf("listBlobsFromFs: got %v, want sha256:%s", found[0], realHex)
+		t.Errorf("ListBlobsFromFs: got %v, want sha256:%s", found[0], realHex)
 	}
 
 	// Test unionShareInventory.

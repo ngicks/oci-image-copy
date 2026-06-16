@@ -1,7 +1,7 @@
-package ociimagecopy
+package remote
 
-// localdir_remote_test.go exercises the localDirRemote implementation:
-//   - NewLocalDirRemote construction
+// localdir_test.go exercises the localDirRemote implementation:
+//   - NewLocalDir construction
 //   - ListBlobs / ListImages — via shared fs-walk helpers
 //   - InspectImage — raw manifest bytes from mirror
 //   - LoadImage / DumpImage — no-op assertions
@@ -16,15 +16,16 @@ import (
 	"testing"
 
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
+	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 )
 
-// buildLocalDirRemote returns a [Remote] backed by a freshly initialised
-// store at baseDir. The directory must already exist.
-func buildLocalDirRemote(t *testing.T, baseDir string) Remote {
+// buildLocalDirRemote returns a [ociimagecopy.Remote] backed by a freshly
+// initialised store at baseDir. The directory must already exist.
+func buildLocalDirRemote(t *testing.T, baseDir string) ociimagecopy.Remote {
 	t.Helper()
-	r, err := NewLocalDirRemote(baseDir)
+	r, err := NewLocalDir(baseDir)
 	if err != nil {
-		t.Fatalf("NewLocalDirRemote: %v", err)
+		t.Fatalf("NewLocalDir: %v", err)
 	}
 	t.Cleanup(func() { _ = r.Close() })
 	return r

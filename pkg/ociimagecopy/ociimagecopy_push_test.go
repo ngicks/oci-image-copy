@@ -3,7 +3,6 @@ package ociimagecopy
 import (
 	"context"
 	"errors"
-	"io"
 	"iter"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"github.com/ngicks/go-fsys-helper/vroot"
 	"github.com/ngicks/oci-image-copy/pkg/cli/skopeo"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
+	"github.com/ngicks/oci-image-copy/pkg/ocidir"
 	"github.com/opencontainers/go-digest"
 )
 
@@ -117,11 +117,19 @@ func newFakeRemote(
 	}
 }
 
-func (f *fakeRemote) Close() error   { return nil }
-func (f *fakeRemote) ReadOnly() bool { return f.readOnly }
-func (f *fakeRemote) Dir() OciDirs   { return f.dirs }
+func (f *fakeRemote) Close() error     { return nil }
+func (f *fakeRemote) ReadOnly() bool   { return f.readOnly }
+func (f *fakeRemote) Blobs() BlobStore { return f.dirs }
+func (f *fakeRemote) Tags() TagStoreV1 { return f.dirs }
 
-func (f *fakeRemote) ListBlobs(ctx context.Context) iter.Seq2[digest.Digest, error] {
+// ListBlobsByImage implements [Remote.ListBlobsByImage]. If assumeHas is set
+// it yields those digests (the test has pre-seeded the peer-has set). Otherwise
+// it derives the blob closure from the image's index.json / manifest on disk,
+// mirroring what the production FS remote does.
+func (f *fakeRemote) ListBlobsByImage(
+	ctx context.Context,
+	ref imageref.ImageRef,
+) iter.Seq2[digest.Digest, error] {
 	if f.assumeHas != nil {
 		assume := f.assumeHas
 		return func(yield func(digest.Digest, error) bool) {
@@ -132,11 +140,19 @@ func (f *fakeRemote) ListBlobs(ctx context.Context) iter.Seq2[digest.Digest, err
 			}
 		}
 	}
-	return ListBlobsFromFs(ctx, f.fs)
-}
-
-func (f *fakeRemote) ListImages(ctx context.Context) iter.Seq2[imageref.ImageRef, error] {
-	return ListImagesFromFs(ctx, f.fs)
+	return func(yield func(digest.Digest, error) bool) {
+		view := NewImageView(ctx, f.dirs, f.dirs, ref)
+		mDesc, man, err := ocidir.ReadManifest(ctx, view)
+		if err != nil {
+			// absent image: yield nothing (no error per spec)
+			return
+		}
+		for _, desc := range ocidir.AllDescriptors(mDesc, man) {
+			if !yield(desc.Digest, nil) {
+				return
+			}
+		}
+	}
 }
 
 func (f *fakeRemote) LoadImage(ctx context.Context, ref imageref.ImageRef) error {
@@ -184,21 +200,17 @@ func (f *fakeRemote) DumpImage(ctx context.Context, ref imageref.ImageRef) error
 	)
 }
 
-// InspectImage implements [Remote]. For oci transport it reads the manifest
-// from the mirror. For live transports it calls skopeoCli.Inspect.
+// InspectImage implements [Remote]. For oci transport it reads the raw manifest
+// bytes from the mirror via NewImageView + ReadRawManifest. For live transports
+// it calls skopeoCli.Inspect.
 func (f *fakeRemote) InspectImage(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
 	if f.transport == skopeo.TransportOci {
-		dir := f.dirs.Image(ref)
-		idx, err := dir.Index()
+		view := NewImageView(ctx, f.dirs, f.dirs, ref)
+		_, raw, err := ocidir.ReadRawManifest(ctx, view)
 		if err != nil {
 			return nil, err
 		}
-		rc, _, err := f.dirs.Blob(ctx, idx.Manifests[0].Digest, 0)
-		if err != nil {
-			return nil, err
-		}
-		defer rc.Close()
-		return io.ReadAll(rc)
+		return raw, nil
 	}
 	return f.skopeoCli.Inspect(ctx,
 		skopeo.TransportRef{Transport: f.transport, Arg1: ref.String()},

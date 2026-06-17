@@ -11,15 +11,14 @@ package remote
 //   commit marker. A crash mid-push leaves at most orphan chunks (harmless for
 //   content-addressed names), never a meta referencing missing chunks.
 //
-//   The Remote/OciDirs interfaces are defined in package ociimagecopy; the
+//   The Remote/StoreV1 interfaces are defined in package ociimagecopy; the
 //   chunked naming/meta/adapters live in pkg/ociimagecopy/fileserver. This file
 //   ties them together, depending on both with no back-reference from either.
 //
 // Limitations (documented per PLAN3):
-//   - ListImages: not supported (no global index on the server).
-//   - ListBlobs: returns the union of descriptors from metas consulted in this
-//     run (the refs being pushed/pulled). Blobs from other images not accessed
-//     in this session are not reported.
+//   - There is no global index on the server, so enumeration is per-image:
+//     ListBlobsByImage reads a single image's meta. Blobs belonging to images
+//     not accessed in this session are not reported.
 
 import (
 	"bytes"
@@ -30,7 +29,6 @@ import (
 	"io"
 	"io/fs"
 	"iter"
-	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -42,13 +40,12 @@ import (
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy"
 	"github.com/ngicks/oci-image-copy/pkg/ociimagecopy/fileserver"
 	"github.com/opencontainers/go-digest"
-	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Compile-time check: [*fileServerRemote] satisfies [ociimagecopy.Remote] and
-// [ociimagecopy.OciDirs].
+// [ociimagecopy.StoreV1].
 var _ ociimagecopy.Remote = (*fileServerRemote)(nil)
-var _ ociimagecopy.OciDirs = (*fileServerRemote)(nil)
+var _ ociimagecopy.StoreV1 = (*fileServerRemote)(nil)
 
 // blobMetaInfo records the size and chunk size for a blob derived from a
 // consulted image meta.
@@ -57,7 +54,7 @@ type blobMetaInfo struct {
 	chunkSize int64
 }
 
-// fileServerRemote implements [ociimagecopy.Remote] and [ociimagecopy.OciDirs]
+// fileServerRemote implements [ociimagecopy.Remote] and [ociimagecopy.StoreV1]
 // over a generic HTTP file server. SSH-remote uses SFTP; this uses HTTP
 // GET/HEAD/PUT.
 //
@@ -95,7 +92,7 @@ type FileServerConfig struct {
 	// fileserver.DefaultNaming{} when nil.
 	Naming fileserver.NamingConvention
 	// ChunkSize is the upload chunk size in bytes. Defaults to
-	// [ociimagecopy.DefaultChunkSize].
+	// [DefaultChunkSize].
 	ChunkSize int64
 	// ReadOnly disables all mutating operations.
 	ReadOnly bool
@@ -107,7 +104,7 @@ func NewFileServer(cfg FileServerConfig) ociimagecopy.Remote {
 		cfg.Naming = fileserver.DefaultNaming{}
 	}
 	if cfg.ChunkSize <= 0 {
-		cfg.ChunkSize = ociimagecopy.DefaultChunkSize
+		cfg.ChunkSize = DefaultChunkSize
 	}
 	return &fileServerRemote{
 		client:        cfg.Client,
@@ -120,9 +117,8 @@ func NewFileServer(cfg FileServerConfig) ociimagecopy.Remote {
 }
 
 // NewFileServerFromSpec constructs a file-server [ociimagecopy.Remote] from a
-// [ociimagecopy.FileServerRemoteSpec]. This is the factory called by the CLI
-// wiring.
-func NewFileServerFromSpec(spec *ociimagecopy.FileServerRemoteSpec) (ociimagecopy.Remote, error) {
+// [FileServerRemoteSpec]. This is the factory called by the CLI wiring.
+func NewFileServerFromSpec(spec *FileServerRemoteSpec) (ociimagecopy.Remote, error) {
 	hdr := make(http.Header)
 	for _, h := range spec.Headers {
 		name, val, ok := splitHeaderPair(h)
@@ -131,7 +127,7 @@ func NewFileServerFromSpec(spec *ociimagecopy.FileServerRemoteSpec) (ociimagecop
 			// (e.g. a bare token with no name), so never echo it verbatim.
 			return nil, fmt.Errorf(
 				"file-server: invalid header %q (expected 'Name: value')",
-				ociimagecopy.RedactHeader(h),
+				RedactHeader(h),
 			)
 		}
 		hdr.Add(name, val)
@@ -182,41 +178,38 @@ func (r *fileServerRemote) Close() error {
 // ReadOnly implements [ociimagecopy.Remote].
 func (r *fileServerRemote) ReadOnly() bool { return r.readOnly }
 
-// Dir implements [ociimagecopy.Remote]. Returns self — fileServerRemote also
-// implements OciDirs.
-func (r *fileServerRemote) Dir() ociimagecopy.OciDirs { return r }
+// Blobs implements [ociimagecopy.Remote]. Returns self — fileServerRemote also
+// implements [ociimagecopy.BlobStore].
+func (r *fileServerRemote) Blobs() ociimagecopy.BlobStore { return r }
 
-// ListBlobs implements [ociimagecopy.Remote].
+// Tags implements [ociimagecopy.Remote]. Returns self — fileServerRemote also
+// implements [ociimagecopy.TagStoreV1].
+func (r *fileServerRemote) Tags() ociimagecopy.TagStoreV1 { return r }
+
+// ListBlobsByImage implements [ociimagecopy.Remote].
 //
-// Returns the union of descriptors from metas consulted in this run.
-// Blobs belonging to images not accessed in this session are not reported.
-// This is a documented limitation: the file server has no global index.
-// Use --assume-remote-has to provide a complete inventory when needed.
-func (r *fileServerRemote) ListBlobs(_ context.Context) iter.Seq2[digest.Digest, error] {
-	r.mu.Lock()
-	snap := make(map[string]blobMetaInfo, len(r.blobsFromMeta))
-	maps.Copy(snap, r.blobsFromMeta)
-	r.mu.Unlock()
-
+// Reads ref's per-image meta (one GET) and yields each descriptor digest.
+// An absent image (the meta GET returns [fs.ErrNotExist]) yields nothing;
+// any other error — transport/auth/server — is yielded once. The getImageMeta
+// read also primes blobsFromMeta (chunkSize) as a side effect.
+func (r *fileServerRemote) ListBlobsByImage(
+	ctx context.Context,
+	ref imageref.ImageRef,
+) iter.Seq2[digest.Digest, error] {
 	return func(yield func(digest.Digest, error) bool) {
-		for d := range snap {
-			if !yield(digest.Digest(d), nil) {
+		meta, err := r.getImageMeta(ctx, ref)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return
+			}
+			yield(digest.Digest(""), err)
+			return
+		}
+		for i := range meta.Descriptors {
+			if !yield(digest.Digest(meta.Descriptors[i].Digest), nil) {
 				return
 			}
 		}
-	}
-}
-
-// ListImages implements [ociimagecopy.Remote].
-// Always returns an error: file-server remotes have no global index.
-func (r *fileServerRemote) ListImages(_ context.Context) iter.Seq2[imageref.ImageRef, error] {
-	err := errors.New(
-		"file-server remote: ListImages is not supported — there is no global " +
-			"index on the server; use per-image InspectImage / ListBlobs, or " +
-			"--assume-remote-has to skip server enumeration",
-	)
-	return func(yield func(imageref.ImageRef, error) bool) {
-		yield(imageref.ImageRef{}, err)
 	}
 }
 
@@ -320,63 +313,53 @@ func (r *fileServerRemote) getImageMeta(
 	return meta, nil
 }
 
-// --- OciDirs interface ---
+// --- BlobStore interface ---
 
-// ErrMultiChunkBlobUnsupported is returned by [fileServerRemote.Blob] when the
-// blob spans more than one chunk. The meta-less top-level Blob accessor only
-// reads chunk 0; rather than silently truncating a multi-chunk blob to its
-// first chunk (a latent landmine — callers comparing against the descriptor
-// size would see a short read), it errors explicitly. Callers that need a
-// multi-chunk blob have the size and must use BlobSource / the meta-backed
-// DirV1.Blob instead.
-var ErrMultiChunkBlobUnsupported = errors.New(
-	"file-server: meta-less Blob accessor cannot serve a multi-chunk blob; use BlobSource",
-)
-
-// Blob implements [ociimagecopy.OciDirs]. Reads chunk 0 directly for size
-// detection. This method is primarily used by InspectImage's fallback and
-// ocidir.ReadManifest.
+// Stat implements [ociimagecopy.BlobStore.Stat]. It reports how much of the
+// blob is present on the file server using the chunk-state machinery (the old
+// ProbeBlob logic): the chunkSize is the meta-primed value when available,
+// else the remote's configured chunkSize.
 //
-// Without a meta the total size is unknown up front, so this accessor can only
-// honestly serve single-chunk blobs. If a second chunk exists, the blob is
-// multi-chunk and the call fails with [ErrMultiChunkBlobUnsupported] instead of
-// returning only chunk 0 while claiming the full size.
-func (r *fileServerRemote) Blob(
+//   - complete → CurrentSize == Size;
+//   - partial (offset > 0) → CurrentSize == offset;
+//   - offset == 0 && !complete → fs.ErrNotExist;
+//   - a real error is propagated (NOT mapped to not-exist).
+func (r *fileServerRemote) Stat(
 	ctx context.Context,
 	dgst digest.Digest,
-	offset int64,
-) (io.ReadCloser, int64, error) {
-	// A second chunk means the blob is multi-chunk: refuse rather than
-	// truncate. (chunk-0-only reads are otherwise indistinguishable from a
-	// complete short blob.)
-	if _, err := r.client.Stat(ctx, r.naming.BlobChunk(dgst, 1)); err == nil {
-		return nil, 0, fmt.Errorf("%w: digest=%s", ErrMultiChunkBlobUnsupported, dgst)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		// A transport/auth/server error probing chunk 1 must not be swallowed
-		// as "single-chunk"; surface it.
-		return nil, 0, fmt.Errorf("file-server Blob %s probe chunk1: %w", dgst, err)
+	size int64,
+) (ociimagecopy.BlobInfo, error) {
+	chunkSize := r.chunkSize
+	r.mu.Lock()
+	if info, ok := r.blobsFromMeta[dgst.String()]; ok && info.chunkSize > 0 {
+		chunkSize = info.chunkSize
 	}
+	r.mu.Unlock()
 
-	name := r.naming.BlobChunk(dgst, 0)
-	rc, total, err := r.client.Get(ctx, name, offset)
+	sink := fileserver.NewChunkedSinkAdapter(r.client, r.naming, dgst, size, chunkSize)
+	st, err := sink.State(ctx)
 	if err != nil {
-		return nil, 0, fmt.Errorf("file-server Blob %s chunk0: %w", dgst, err)
+		return ociimagecopy.BlobInfo{}, fmt.Errorf("file-server stat %s: %w", dgst, err)
 	}
-	return rc, total, nil
+	if st.Complete {
+		return ociimagecopy.BlobInfo{CurrentSize: size, Size: size}, nil
+	}
+	// Only a strictly-partial chunk prefix is a usable resume point; anything
+	// that is not Complete must report CurrentSize < Size so the skip test
+	// ("complete ⟺ CurrentSize == Size") cannot fire on unverified content.
+	// (ChunkedSink.State already guarantees offset < size when !complete; the
+	// bound keeps the invariant uniform with the fs backend.)
+	if st.Offset > 0 && st.Offset < size {
+		return ociimagecopy.BlobInfo{CurrentSize: st.Offset, Size: size}, nil
+	}
+	return ociimagecopy.BlobInfo{}, fmt.Errorf("file-server stat %s: %w", dgst, fs.ErrNotExist)
 }
 
-// Image implements [ociimagecopy.OciDirs].
-// Returns a [fsMetaDirV1] view that serves index.json and oci-layout verbatim
-// from the per-image meta, and reads blobs via ChunkedSource.
-func (r *fileServerRemote) Image(ref imageref.ImageRef) ocidir.DirV1 {
-	return &fsMetaDirV1{remote: r, ref: ref}
-}
-
-// BlobSource implements [ociimagecopy.OciDirs] (pull direction).
+// PrepDownload implements [ociimagecopy.BlobStore.PrepDownload] (pull direction).
 // Returns a [fsutil.ResumableSource] backed by ChunkedSource.
 // Uses the chunkSize recorded in the consulted meta when available, falling
 // back to the remote's configured chunkSize otherwise.
-func (r *fileServerRemote) BlobSource(
+func (r *fileServerRemote) PrepDownload(
 	_ context.Context,
 	dgst digest.Digest,
 	size int64,
@@ -390,10 +373,11 @@ func (r *fileServerRemote) BlobSource(
 	return fileserver.NewChunkedSourceAdapter(r.client, r.naming, dgst, size, chunkSize), nil
 }
 
-// BlobSink implements [ociimagecopy.OciDirs] (push direction).
+// PrepUpload implements [ociimagecopy.BlobStore.PrepUpload] (push direction).
 // Returns a [fsutil.ResumableSink] backed by ChunkedSink.
 // Returns [ociimagecopy.ErrReadOnly] when the remote is read-only.
-func (r *fileServerRemote) BlobSink(
+// No parent-dir creation: the file server has a flat keyspace.
+func (r *fileServerRemote) PrepUpload(
 	_ context.Context,
 	dgst digest.Digest,
 	size int64,
@@ -404,24 +388,57 @@ func (r *fileServerRemote) BlobSink(
 	return fileserver.NewChunkedSinkAdapter(r.client, r.naming, dgst, size, r.chunkSize), nil
 }
 
-// MkdirBlobParent implements [ociimagecopy.OciDirs]. No-op: the file server has
-// no directory hierarchy — objects are flat-named by key.
-func (r *fileServerRemote) MkdirBlobParent(_ digest.Digest) error { return nil }
+// --- TagStoreV1 interface ---
 
-// PutTagFile implements [ociimagecopy.OciDirs].
-//
-// Accumulates oci-layout and index.json per ref in memory. When both are
-// present the meta is assembled (descriptor closure derived from the uploaded
-// manifest blob) and written via a single Put — the commit marker.
+// GetIndex implements [ociimagecopy.TagStoreV1.GetIndex]. Returns the verbatim
+// index.json bytes from the per-image meta. getImageMeta's not-exist error
+// already wraps [fs.ErrNotExist].
+func (r *fileServerRemote) GetIndex(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
+	meta, err := r.getImageMeta(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(meta.IndexJSON), nil
+}
+
+// GetOciLayout implements [ociimagecopy.TagStoreV1.GetOciLayout]. Returns the
+// verbatim oci-layout bytes from the per-image meta. getImageMeta's not-exist
+// error already wraps [fs.ErrNotExist].
+func (r *fileServerRemote) GetOciLayout(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
+	meta, err := r.getImageMeta(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(meta.OciLayout), nil
+}
+
+// PutIndex implements [ociimagecopy.TagStoreV1.PutIndex]. Stashes the verbatim
+// index.json half in the per-ref accumulator; the commit fires once both
+// halves are present.
+func (r *fileServerRemote) PutIndex(ctx context.Context, ref imageref.ImageRef, raw []byte) error {
+	return r.accumulateTagFile(ctx, ref, "index.json", raw)
+}
+
+// PutOciLayout implements [ociimagecopy.TagStoreV1.PutOciLayout]. Stashes the
+// verbatim oci-layout half in the per-ref accumulator; the commit fires once
+// both halves are present.
+func (r *fileServerRemote) PutOciLayout(ctx context.Context, ref imageref.ImageRef, raw []byte) error {
+	return r.accumulateTagFile(ctx, ref, "oci-layout", raw)
+}
+
+// accumulateTagFile stashes one verbatim tag-file half (oci-layout or
+// index.json) per ref in memory. When both are present the meta is assembled
+// (descriptor closure derived from the uploaded manifest blob) and written via
+// a single Put — the commit marker.
 //
 // Push ordering is blobs-first/tag-files-last (enforced by push.go
-// mirrorTagFiles which is called after pushBlobs). By the time PutTagFile
-// fires for a given ref, all blobs are already uploaded, so reading the
+// mirrorTagFiles, which is called after pushBlobs). By the time the second half
+// arrives for a given ref, all blobs are already uploaded, so reading the
 // manifest blob for descriptor derivation is always safe.
 //
 // Cross-image state leaks are prevented: each ref has its own accumulation
 // entry keyed by ref.String().
-func (r *fileServerRemote) PutTagFile(
+func (r *fileServerRemote) accumulateTagFile(
 	ctx context.Context,
 	ref imageref.ImageRef,
 	name string,
@@ -429,11 +446,6 @@ func (r *fileServerRemote) PutTagFile(
 ) error {
 	if r.readOnly {
 		return ociimagecopy.ErrReadOnly
-	}
-	if name != "oci-layout" && name != "index.json" {
-		return fmt.Errorf(
-			"file-server PutTagFile: unexpected name %q (want oci-layout or index.json)", name,
-		)
 	}
 
 	r.mu.Lock()
@@ -555,174 +567,4 @@ func (r *fileServerRemote) readBlobFull(
 	}
 	defer rc.Close()
 	return io.ReadAll(rc)
-}
-
-// --- fsMetaDirV1 ---
-
-// fsMetaDirV1 implements [ocidir.DirV1] backed by the per-image metadata.
-//
-// Index and ImageLayout serve the verbatim raw bytes from the meta so that
-// sha256 math over those bytes holds (no re-marshalling). Blob reads delegate
-// to ChunkedSource using the chunkSize recorded in the meta.
-type fsMetaDirV1 struct {
-	remote *fileServerRemote
-	ref    imageref.ImageRef
-
-	// lazily fetched meta; protected by mu.
-	mu      sync.Mutex
-	meta    *fileserver.ImageMeta
-	metaErr error
-}
-
-// fetchMeta fetches the meta once and caches the result.
-func (d *fsMetaDirV1) fetchMeta(ctx context.Context) (*fileserver.ImageMeta, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.meta != nil {
-		return d.meta, nil
-	}
-	if d.metaErr != nil {
-		return nil, d.metaErr
-	}
-	meta, err := d.remote.getImageMeta(ctx, d.ref)
-	if err != nil {
-		d.metaErr = err
-		return nil, err
-	}
-	d.meta = &meta
-	return d.meta, nil
-}
-
-// Index implements [ocidir.DirV1].
-// Returns the verbatim index.json parsed from the meta; no re-marshalling.
-func (d *fsMetaDirV1) Index() (v1.Index, error) {
-	meta, err := d.fetchMeta(context.Background())
-	if err != nil {
-		return v1.Index{}, err
-	}
-	return meta.ParsedIndex()
-}
-
-// ImageLayout implements [ocidir.DirV1].
-// Returns the verbatim oci-layout parsed from the meta.
-func (d *fsMetaDirV1) ImageLayout() (v1.ImageLayout, error) {
-	meta, err := d.fetchMeta(context.Background())
-	if err != nil {
-		return v1.ImageLayout{}, err
-	}
-	return meta.ParsedImageLayout()
-}
-
-// RawIndex implements [ocidir.RawAccessor].
-// Returns the verbatim raw bytes of index.json from the per-image meta.
-func (d *fsMetaDirV1) RawIndex() ([]byte, error) {
-	meta, err := d.fetchMeta(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	return []byte(meta.IndexJSON), nil
-}
-
-// RawImageLayout implements [ocidir.RawAccessor].
-// Returns the verbatim raw bytes of oci-layout from the per-image meta.
-func (d *fsMetaDirV1) RawImageLayout() ([]byte, error) {
-	meta, err := d.fetchMeta(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	return []byte(meta.OciLayout), nil
-}
-
-// Blob implements [ocidir.DirV1].
-// Reads blob bytes via ChunkedSource using the chunkSize from the meta.
-// Returns [ErrNotExist] when the digest is not in the meta's descriptor list.
-func (d *fsMetaDirV1) Blob(
-	ctx context.Context,
-	dgst digest.Digest,
-	offset int64,
-) (io.ReadCloser, int64, error) {
-	meta, err := d.fetchMeta(ctx)
-	if err != nil {
-		return nil, 0, fmt.Errorf("file-server DirV1 Blob %s: fetch meta: %w", dgst, err)
-	}
-
-	// Locate the blob size in the meta descriptors.
-	var size int64 = -1
-	for _, desc := range meta.Descriptors {
-		if desc.Digest == dgst.String() {
-			size = desc.Size
-			break
-		}
-	}
-	if size < 0 {
-		return nil, 0, fmt.Errorf(
-			"file-server DirV1 Blob %s: not found in meta for %s",
-			dgst, d.ref.String(),
-		)
-	}
-
-	src := fileserver.NewChunkedSourceAdapter(
-		d.remote.client, d.remote.naming, dgst, size, meta.ChunkSize,
-	)
-	rc, err := src.Src.Open(ctx, offset)
-	if err != nil {
-		return nil, 0, fmt.Errorf("file-server DirV1 Blob %s: open source: %w", dgst, err)
-	}
-	return rc, size, nil
-}
-
-// --- RefPrimer / BlobProber optional interfaces ---
-
-// Compile-time checks: fileServerRemote satisfies both optional interfaces
-// (defined in package ociimagecopy, consumed by the push orchestrator).
-var _ ociimagecopy.RefPrimer = (*fileServerRemote)(nil)
-var _ ociimagecopy.BlobProber = (*fileServerRemote)(nil)
-
-// PrimeRefs implements [ociimagecopy.RefPrimer].
-//
-// For each ref it fetches the image meta to load chunkSize information into
-// blobsFromMeta for use by BlobSource and ProbeBlob.
-//
-// Error taxonomy (decision D14): an absent meta ([fs.ErrNotExist], e.g. a 404
-// for a first push) is normal and skipped silently. Any other error —
-// transport failure, auth (401/403), server error (5xx) — is propagated: those
-// must NOT be read as "absent", because doing so would silently downgrade a
-// failed inventory probe into "the remote has nothing, send everything".
-func (r *fileServerRemote) PrimeRefs(ctx context.Context, refs []imageref.ImageRef) error {
-	for _, ref := range refs {
-		if _, err := r.getImageMeta(ctx, ref); err != nil {
-			// Absent images are normal (e.g. first push); skip silently.
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			// Transport/auth/server errors are NOT "absent": surface them so
-			// the caller does not mistake a failed probe for an empty remote.
-			return fmt.Errorf("file-server prime %s: %w", ref.String(), err)
-		}
-	}
-	return nil
-}
-
-// ProbeBlob implements [ociimagecopy.BlobProber].
-// Creates a ChunkedSinkAdapter with the known (or fallback) chunkSize and
-// calls State to determine whether the blob is already fully present on the
-// remote. Returns true if the blob is complete.
-func (r *fileServerRemote) ProbeBlob(
-	ctx context.Context,
-	dgst digest.Digest,
-	size int64,
-) (bool, error) {
-	chunkSize := r.chunkSize
-	r.mu.Lock()
-	if info, ok := r.blobsFromMeta[dgst.String()]; ok && info.chunkSize > 0 {
-		chunkSize = info.chunkSize
-	}
-	r.mu.Unlock()
-
-	sink := fileserver.NewChunkedSinkAdapter(r.client, r.naming, dgst, size, chunkSize)
-	state, err := sink.State(ctx)
-	if err != nil {
-		return false, err
-	}
-	return state.Complete, nil
 }

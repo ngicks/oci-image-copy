@@ -4,13 +4,11 @@ package ociimagecopy
 // tag-file writes (the "commit" step) must happen AFTER all blob transfers.
 //
 // The tests use a hookDirs wrapper around FsOciDirs that fires a callback on
-// PutTagFile, allowing the test to inspect the share directory at that moment
-// and confirm all blobs are already present.
+// PutIndex / PutOciLayout, allowing the test to inspect the share directory at
+// that moment and confirm all blobs are already present.
 
 import (
 	"context"
-	"io"
-	"iter"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,59 +23,64 @@ import (
 )
 
 // ────────────────────────────────────────────────────────────────────────────
-// hookDirs — OciDirs that fires a callback on PutTagFile
+// hookDirs — StoreV1 that fires a callback on PutIndex / PutOciLayout
 // ────────────────────────────────────────────────────────────────────────────
 
-// hookDirs wraps a *FsOciDirs and calls hook() on every PutTagFile
-// invocation, before the underlying write. All other operations delegate
-// to inner without interception.
+// hookDirs wraps a *FsOciDirs and calls hook() on every PutIndex and
+// PutOciLayout invocation, before the underlying write. All other operations
+// delegate to inner without interception.
 type hookDirs struct {
 	inner *FsOciDirs
 	hook  func()
 }
 
-var _ OciDirs = (*hookDirs)(nil)
+var _ StoreV1 = (*hookDirs)(nil)
 
-func (h *hookDirs) Blob(
-	ctx context.Context, d digest.Digest, offset int64,
-) (io.ReadCloser, int64, error) {
-	return h.inner.Blob(ctx, d, offset)
+func (h *hookDirs) Stat(
+	ctx context.Context, dgst digest.Digest, size int64,
+) (BlobInfo, error) {
+	return h.inner.Stat(ctx, dgst, size)
 }
 
-func (h *hookDirs) Image(ref imageref.ImageRef) ocidir.DirV1 {
-	return h.inner.Image(ref)
-}
-
-func (h *hookDirs) BlobSource(
+func (h *hookDirs) PrepDownload(
 	ctx context.Context, dgst digest.Digest, size int64,
 ) (fsutil.ResumableSource, error) {
-	return h.inner.BlobSource(ctx, dgst, size)
+	return h.inner.PrepDownload(ctx, dgst, size)
 }
 
-func (h *hookDirs) BlobSink(
+func (h *hookDirs) PrepUpload(
 	ctx context.Context, dgst digest.Digest, size int64,
 ) (fsutil.ResumableSink, error) {
-	return h.inner.BlobSink(ctx, dgst, size)
+	return h.inner.PrepUpload(ctx, dgst, size)
 }
 
-func (h *hookDirs) MkdirBlobParent(dgst digest.Digest) error {
-	return h.inner.MkdirBlobParent(dgst)
+func (h *hookDirs) GetIndex(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
+	return h.inner.GetIndex(ctx, ref)
 }
 
-func (h *hookDirs) PutTagFile(
-	ctx context.Context, ref imageref.ImageRef, name string, data []byte,
-) error {
+func (h *hookDirs) GetOciLayout(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
+	return h.inner.GetOciLayout(ctx, ref)
+}
+
+func (h *hookDirs) PutIndex(ctx context.Context, ref imageref.ImageRef, raw []byte) error {
 	if h.hook != nil {
 		h.hook()
 	}
-	return h.inner.PutTagFile(ctx, ref, name, data)
+	return h.inner.PutIndex(ctx, ref, raw)
+}
+
+func (h *hookDirs) PutOciLayout(ctx context.Context, ref imageref.ImageRef, raw []byte) error {
+	if h.hook != nil {
+		h.hook()
+	}
+	return h.inner.PutOciLayout(ctx, ref, raw)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// hookFakeRemote — fakeRemote whose Dir() returns a hookDirs
+// hookFakeRemote — fakeRemote whose Blobs()/Tags() return a hookDirs
 // ────────────────────────────────────────────────────────────────────────────
 
-// hookFakeRemote is a fakeRemote whose Dir() returns a hookDirs.
+// hookFakeRemote is a fakeRemote whose Blobs()/Tags() return a hookDirs.
 // All other methods delegate to fakeRemote.
 type hookFakeRemote struct {
 	*fakeRemote
@@ -86,10 +89,11 @@ type hookFakeRemote struct {
 
 var _ Remote = (*hookFakeRemote)(nil)
 
-func (r *hookFakeRemote) Dir() OciDirs { return r.hookD }
+func (r *hookFakeRemote) Blobs() BlobStore { return r.hookD }
+func (r *hookFakeRemote) Tags() TagStoreV1 { return r.hookD }
 
-// newHookRemote builds a hookFakeRemote: a fakeRemote whose PutTagFile
-// fires hook(). The underlying FS is rooted at baseDir.
+// newHookRemote builds a hookFakeRemote: a fakeRemote whose PutIndex /
+// PutOciLayout fires hook(). The underlying FS is rooted at baseDir.
 func newHookRemote(
 	baseDir string,
 	sk SkopeoLike,
@@ -112,10 +116,47 @@ func newHookRemote(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// hookTagStore — a TagStoreV1 that fires a callback on PutIndex/PutOciLayout
+// ────────────────────────────────────────────────────────────────────────────
+
+// hookTagStore wraps a *FsOciDirs and fires hook() on every PutIndex call
+// (the final commit-last write). Used by the pull ordering test to intercept
+// the local tag-file write without needing to replace the Local's concrete
+// dirs field.
+type hookTagStore struct {
+	inner *FsOciDirs
+	hook  func()
+}
+
+var _ TagStoreV1 = (*hookTagStore)(nil)
+
+func (h *hookTagStore) GetIndex(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
+	return h.inner.GetIndex(ctx, ref)
+}
+
+func (h *hookTagStore) GetOciLayout(ctx context.Context, ref imageref.ImageRef) ([]byte, error) {
+	return h.inner.GetOciLayout(ctx, ref)
+}
+
+func (h *hookTagStore) PutIndex(ctx context.Context, ref imageref.ImageRef, raw []byte) error {
+	if h.hook != nil {
+		h.hook()
+	}
+	return h.inner.PutIndex(ctx, ref, raw)
+}
+
+func (h *hookTagStore) PutOciLayout(ctx context.Context, ref imageref.ImageRef, raw []byte) error {
+	if h.hook != nil {
+		h.hook()
+	}
+	return h.inner.PutOciLayout(ctx, ref, raw)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────────────────────
 
-// TestPush_TagFilesWrittenAfterBlobs verifies that when PutTagFile is called
+// TestPush_TagFilesWrittenAfterBlobs verifies that when PutIndex is called
 // (the commit step) on the remote, all expected blobs are already present in
 // the remote share/sha256/ directory. This asserts the commit-last ordering.
 func TestPush_TagFilesWrittenAfterBlobs(t *testing.T) {
@@ -134,7 +175,7 @@ func TestPush_TagFilesWrittenAfterBlobs(t *testing.T) {
 		},
 	}
 
-	// Snapshot which blobs are present in share/ whenever PutTagFile fires.
+	// Snapshot which blobs are present in share/ whenever PutIndex fires.
 	var blobsAtTagFileWrite []string
 	hook := func() {
 		shaDir := filepath.Join(remoteBase, "share", "sha256")
@@ -157,15 +198,15 @@ func TestPush_TagFilesWrittenAfterBlobs(t *testing.T) {
 	}
 
 	if len(blobsAtTagFileWrite) == 0 {
-		t.Error("PutTagFile was never called (no hook invocation recorded)")
+		t.Error("PutIndex was never called (no hook invocation recorded)")
 	}
 
 	// Every blob that the push would have sent must already be present at
-	// the time PutTagFile fired.
+	// the time PutIndex fired.
 	for _, wantHex := range allRealHexes() {
 		if !slices.Contains(blobsAtTagFileWrite, wantHex) {
 			t.Errorf(
-				"blob %s was NOT present in share/ when PutTagFile fired "+
+				"blob %s was NOT present in share/ when PutIndex fired "+
 					"(blobs seen: %v)",
 				wantHex, blobsAtTagFileWrite,
 			)
@@ -174,8 +215,13 @@ func TestPush_TagFilesWrittenAfterBlobs(t *testing.T) {
 }
 
 // TestPull_TagFilesWrittenAfterBlobs verifies the pull-direction commit-last
-// ordering: local PutTagFile is called only after all blob data has been
+// ordering: local PutIndex is called only after all blob data has been
 // written into the local share/sha256/ directory.
+//
+// Because Local.dirs is a concrete *FsOciDirs field (not an interface),
+// we cannot swap in a hook by replacing the field. Instead we drive
+// pullBlobs + mirrorTagFilesFromPeer directly with a hookTagStore as the
+// local destination, preserving the test intent.
 func TestPull_TagFilesWrittenAfterBlobs(t *testing.T) {
 	t.Parallel()
 	localFS, remoteFS, localBase, remoteBase := newSides(t)
@@ -184,11 +230,29 @@ func TestPull_TagFilesWrittenAfterBlobs(t *testing.T) {
 	shareDir := filepath.Join(remoteBase, "share")
 	seedDump(t, tagDir, shareDir)
 
-	// Build a hookDirs for the LOCAL side that fires on PutTagFile.
-	localInner := NewFsOciDirs(localFS, 1)
+	remoteDirs := NewFsOciDirs(remoteFS, 1)
+	localDirs := NewFsOciDirs(localFS, 1)
+	ctx := context.Background()
+	ref, err := imageref.Parse("ghcr.io/a/b:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read the image closure from the remote.
+	view := NewImageView(ctx, remoteDirs, remoteDirs, ref)
+	mDesc, man, err := ocidir.ReadManifest(ctx, view)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	descs := ocidir.AllDescriptors(mDesc, man)
+	sizes := descriptorSizes(descs)
+	digestsSorted := sortedDigests(descriptorDigestSet(descs))
+	blobs := toBlobTransfers(digestsSorted, sizes)
+
+	// Build a hookTagStore for the LOCAL side that fires on PutIndex.
 	var blobsAtTagFileWrite []string
-	localHookD := &hookDirs{
-		inner: localInner,
+	localHookTags := &hookTagStore{
+		inner: localDirs,
 		hook: func() {
 			shaDir := filepath.Join(localBase, "share", "sha256")
 			entries, err := os.ReadDir(shaDir)
@@ -200,53 +264,27 @@ func TestPull_TagFilesWrittenAfterBlobs(t *testing.T) {
 		},
 	}
 
-	// Build a Local and replace its dirs field with the hookDirs.
-	// This works because Local.dirs is now typed as OciDirs (interface).
-	local := &Local{
-		baseDir:   localBase,
-		transport: skopeo.TransportContainersStorage,
-		skopeoCli: &recordingSkopeo{},
-		fs:        localFS,
-		dirs:      localHookD, // hookDirs intercepts PutTagFile
-	}
-
-	remote := newFakeRemote(
-		remoteBase,
-		skopeo.TransportContainersStorage,
-		&recordingSkopeo{
-			copyTo: func(_ context.Context, _, _ skopeo.TransportRef, _ string) error {
-				return nil
-			},
-		},
-		remoteFS,
-	)
-
-	res, err := local.Pull(context.Background(), PullArgs{
-		Images:            []string{"ghcr.io/a/b:v1"},
-		AssumeLocalHasSet: map[string]struct{}{},
-	}, remote)
+	// 1. Pull all blobs from remote into local.
+	_, err = pullBlobs(ctx, blobs, remoteDirs, localFS, localDirs, DefaultLocalParallelism, false)
 	if err != nil {
-		t.Fatalf("Pull: %v", err)
+		t.Fatalf("pullBlobs: %v", err)
 	}
-	if res.FailedCount != 0 {
-		t.Fatalf("Pull failed: %+v", res.Reports)
+
+	// 2. Mirror tag files (the "commit" step) using the hook destination.
+	if err := mirrorTagFilesFromPeer(ctx, remoteDirs, ref, localHookTags); err != nil {
+		t.Fatalf("mirrorTagFilesFromPeer: %v", err)
 	}
 
 	if len(blobsAtTagFileWrite) == 0 {
-		t.Error("local PutTagFile was never called (no hook invocation recorded)")
+		t.Error("local PutIndex was never called (no hook invocation recorded)")
 	}
-	// Every blob must have already been written locally before PutTagFile fired.
+	// Every blob must have already been written locally before PutIndex fired.
 	for _, wantHex := range allRealHexes() {
 		if !slices.Contains(blobsAtTagFileWrite, wantHex) {
 			t.Errorf(
-				"blob %s NOT present locally when PutTagFile fired (blobs seen: %v)",
+				"blob %s NOT present locally when PutIndex fired (blobs seen: %v)",
 				wantHex, blobsAtTagFileWrite,
 			)
 		}
 	}
 }
-
-// Ensure unused imports don't cause compile errors: iter is used via fakeRemote
-// (which is defined in push_test.go and uses iter.Seq2). We import it here to
-// satisfy the compiler in isolation; the actual use is in push_test.go.
-var _ iter.Seq[int] = nil

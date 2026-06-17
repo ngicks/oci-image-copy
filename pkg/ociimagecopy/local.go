@@ -82,14 +82,14 @@ type Local struct {
 	skopeoCli SkopeoLike
 	lister    Lister
 	fs        vroot.Fs[vroot.File]
-	dirs      OciDirs
+	dirs      *FsOciDirs
 
 	validateOnce sync.Once
 	validateErr  error
 }
 
 // DefaultLocalParallelism is the default upload concurrency for the
-// local-side [OciDirs] (used when sourcing blobs into the local mirror
+// local-side store (used when sourcing blobs into the local mirror
 // during pull).
 const DefaultLocalParallelism = 4
 
@@ -238,9 +238,13 @@ func (l *Local) Skopeo() SkopeoLike { return l.skopeoCli }
 // FS returns the local [vroot.Fs[vroot.File]] rooted at BaseDir.
 func (l *Local) FS() vroot.Fs[vroot.File] { return l.fs }
 
-// Dir returns the local [OciDirs] view (the multi-image OCI store
+// Blobs returns the local [BlobStore] (the content-addressed blob pool
 // rooted at BaseDir).
-func (l *Local) Dir() OciDirs { return l.dirs }
+func (l *Local) Blobs() BlobStore { return l.dirs }
+
+// Tags returns the local [TagStoreV1] (the per-tag pointer files rooted at
+// BaseDir).
+func (l *Local) Tags() TagStoreV1 { return l.dirs }
 
 // Lister returns the local docker / podman wrapper, or nil for
 // [skopeo.TransportOci].

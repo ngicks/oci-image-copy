@@ -2,10 +2,13 @@ package ociimagecopy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"sort"
 	"sync"
 
@@ -23,9 +26,9 @@ import (
 // the read side).
 const CopyBufferSize = 256 * 1024
 
-// safeWriteOpt is the [fsutil.SafeWriteOption] used by
-// [FsOciDirs.PutTagFile] for tmp + atomic-rename writes of small
-// per-image metadata files.
+// safeWriteOpt is the [fsutil.SafeWriteOption] used by the [FsOciDirs]
+// tag-file writers ([FsOciDirs.PutIndex] / [FsOciDirs.PutOciLayout]) for
+// tmp + atomic-rename writes of small per-image metadata files.
 var safeWriteOpt = fsutil.SafeWriteOption[vroot.Fs[vroot.File], vroot.File]{
 	TempFilePolicy: fsutil.NewTempFilePolicyDir[vroot.Fs[vroot.File]]("__temp__"),
 }
@@ -60,7 +63,7 @@ func makePullOpt(dgst digest.Digest) fsutil.ResumableCopyOption[vroot.Fs[vroot.F
 	}
 }
 
-// blobTransfer describes one blob to move between two OciDirs.
+// blobTransfer describes one blob to move between two blob stores.
 type blobTransfer struct {
 	Digest digest.Digest
 	Size   int64
@@ -74,9 +77,9 @@ type blobTransfer struct {
 func pullBlobs(
 	ctx context.Context,
 	blobs []blobTransfer,
-	srcDirs OciDirs,
+	srcDirs BlobStore,
 	localFs vroot.Fs[vroot.File],
-	localDirs OciDirs,
+	localDirs BlobStore,
 	parallelism int,
 	verifyReused bool,
 ) (PutBlobsResult, error) {
@@ -124,9 +127,9 @@ func pullBlobs(
 func pullOneBlob(
 	ctx context.Context,
 	bt blobTransfer,
-	srcDirs OciDirs,
+	srcDirs BlobStore,
 	localFs vroot.Fs[vroot.File],
-	localDirs OciDirs,
+	localDirs BlobStore,
 	verifyReused bool,
 ) (bool, error) {
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
@@ -137,49 +140,50 @@ func pullOneBlob(
 		return false, err
 	}
 
-	// Check if already complete.
-	if fi, err := localFs.Stat(blobPath); err == nil {
-		if fi.Size() == bt.Size {
-			if verifyReused {
-				// Verify sha256 of existing file before reusing.
-				f, err := localFs.OpenFile(blobPath, os.O_RDONLY, 0)
-				if err == nil {
-					verifier := bt.Digest.Verifier()
-					_, copyErr := io.Copy(verifier, f)
-					_ = f.Close()
-					if copyErr == nil && verifier.Verified() {
-						logger.LogAttrs(ctx, slog.LevelInfo, "transfer.pull.skip.verified",
-							slog.String("blob", bt.Digest.String()),
-							slog.Int64("size", fi.Size()),
-						)
-						return false, nil
-					}
-					// Mismatch or read error: remove and re-download.
-					logger.LogAttrs(ctx, slog.LevelWarn, "transfer.pull.corrupt",
+	// Check if already complete via the local store's Stat. Absent / partial
+	// blobs (including fs.ErrNotExist) fall through to the download, which
+	// resumes from CurrentSize.
+	if bi, err := localDirs.Stat(ctx, bt.Digest, bt.Size); err == nil && bi.CurrentSize == bi.Size {
+		if verifyReused {
+			// Verify sha256 of existing file before reusing.
+			f, err := localFs.OpenFile(blobPath, os.O_RDONLY, 0)
+			if err == nil {
+				verifier := bt.Digest.Verifier()
+				_, copyErr := io.Copy(verifier, f)
+				_ = f.Close()
+				if copyErr == nil && verifier.Verified() {
+					logger.LogAttrs(ctx, slog.LevelInfo, "transfer.pull.skip.verified",
 						slog.String("blob", bt.Digest.String()),
-						slog.Int64("size", fi.Size()),
+						slog.Int64("size", bi.CurrentSize),
 					)
-					_ = localFs.Remove(blobPath)
+					return false, nil
 				}
-				// Fall through to download.
-			} else {
-				logger.LogAttrs(ctx, slog.LevelInfo, "transfer.pull.skip",
+				// Mismatch or read error: remove and re-download.
+				logger.LogAttrs(ctx, slog.LevelWarn, "transfer.pull.corrupt",
 					slog.String("blob", bt.Digest.String()),
-					slog.Int64("size", fi.Size()),
+					slog.Int64("size", bi.CurrentSize),
 				)
-				return false, nil
+				_ = localFs.Remove(blobPath)
 			}
+			// Fall through to download.
+		} else {
+			logger.LogAttrs(ctx, slog.LevelInfo, "transfer.pull.skip",
+				slog.String("blob", bt.Digest.String()),
+				slog.Int64("size", bi.CurrentSize),
+			)
+			return false, nil
 		}
 	}
 
-	// Ensure parent dir exists.
-	if err := localDirs.MkdirBlobParent(bt.Digest); err != nil {
+	// Ensure parent dir exists. The pull destination write goes through the
+	// raw localFs (opt.Pull), not a sink, so the mkdir is inlined here.
+	if err := localFs.MkdirAll(path.Dir(blobPath), 0o755); err != nil {
 		return false, fmt.Errorf("mkdir parent: %w", err)
 	}
 
-	src, err := srcDirs.BlobSource(ctx, bt.Digest, bt.Size)
+	src, err := srcDirs.PrepDownload(ctx, bt.Digest, bt.Size)
 	if err != nil {
-		return false, fmt.Errorf("blob-source: %w", err)
+		return false, fmt.Errorf("prep-download: %w", err)
 	}
 	opt := makePullOpt(bt.Digest)
 	logger.LogAttrs(ctx, slog.LevelInfo, "transfer.pull",
@@ -198,7 +202,7 @@ func pushBlobs(
 	ctx context.Context,
 	blobs []blobTransfer,
 	localFs vroot.Fs[vroot.File],
-	remoteDirs OciDirs,
+	remoteDirs BlobStore,
 	parallelism int,
 ) (PutBlobsResult, error) {
 	var (
@@ -240,7 +244,7 @@ func pushOneBlob(
 	ctx context.Context,
 	bt blobTransfer,
 	localFs vroot.Fs[vroot.File],
-	remoteDirs OciDirs,
+	remoteDirs BlobStore,
 ) (bool, error) {
 	logger := contextkey.ValueSlogLoggerDefault(ctx)
 	info := fsutil.ContentInfo{ETag: bt.Digest.String(), Size: bt.Size}
@@ -250,27 +254,25 @@ func pushOneBlob(
 		return false, err
 	}
 
-	// Ensure parent dir exists on the remote side before writing.
-	if err := remoteDirs.MkdirBlobParent(bt.Digest); err != nil {
-		return false, fmt.Errorf("mkdir remote parent: %w", err)
-	}
-
-	sink, err := remoteDirs.BlobSink(ctx, bt.Digest, bt.Size)
-	if err != nil {
-		return false, fmt.Errorf("blob-sink: %w", err)
-	}
-
-	// Check if already complete via sink state.
-	st, err := sink.State(ctx)
-	if err != nil {
-		return false, fmt.Errorf("sink state: %w", err)
-	}
-	if st.Complete {
+	// Check if already complete via the remote store's Stat. A not-exist /
+	// partial blob falls through to the upload; any other Stat error aborts.
+	bi, err := remoteDirs.Stat(ctx, bt.Digest, bt.Size)
+	if err == nil && bi.CurrentSize == bi.Size {
 		logger.LogAttrs(ctx, slog.LevelInfo, "transfer.push.skip",
 			slog.String("blob", bt.Digest.String()),
 			slog.Int64("size", bt.Size),
 		)
 		return false, nil
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("stat: %w", err)
+	}
+
+	// PrepUpload creates the blob's parent directory (for the fs backend)
+	// before returning the sink.
+	sink, err := remoteDirs.PrepUpload(ctx, bt.Digest, bt.Size)
+	if err != nil {
+		return false, fmt.Errorf("prep-upload: %w", err)
 	}
 
 	logger.LogAttrs(ctx, slog.LevelInfo, "transfer.push",

@@ -2,15 +2,35 @@ package remote
 
 // fileserver_test.go unit-tests the fileServerRemote implementation.
 // Scenarios covered:
-//   - PutTagFile accumulation: meta Put happens exactly once, after both
-//     files, with correct descriptors.
-//   - ListImages: always returns an error.
+//   - PutIndex/PutOciLayout accumulation: meta Put happens exactly once, after
+//     both files, with correct descriptors (D15).
 //   - InspectImage: reads manifest blob; sha256(returned bytes)==manifest digest.
-//   - ReadOnly: PutTagFile / BlobSink return ociimagecopy.ErrReadOnly.
+//   - ReadOnly: PutOciLayout/PrepUpload return ociimagecopy.ErrReadOnly.
 //   - Close: no error.
-//   - ListBlobs: derived from consulted metas.
-//   - MkdirBlobParent: no-op.
-//   - LoadImage / DumpImage: no-op.
+//   - ListBlobsByImage: derived from consulted meta (replaces global ListBlobs,
+//     which was deleted per D4/D5).
+//   - Blobs()/Tags() return self (replaces Dir()==OciDirs(r) identity, per D12).
+//   - PrepDownload uses meta chunkSize (replaces BlobSource test).
+//   - Stat: complete/partial/absent/transport-error taxonomy (replaces ProbeBlob).
+//   - ListBlobsByImage error taxonomy: transport error propagated; absent meta
+//     yields nothing (replaces PrimeRefs error tests, per D3/D5).
+//   - LoadImage / DumpImage: no-op assertions.
+//
+// DELETED (with reasons):
+//   - TestFileServerRemote_ListImages_Error: Remote.ListImages removed (D4).
+//   - TestFileServerRemote_MkdirBlobParent_NoOp: MkdirBlobParent removed (D9).
+//   - TestFileServerRemote_PrimeRefs, _PropagatesTransportError, _AbsentIsSilent:
+//     PrimeRefs/RefPrimer dropped (D3). Intent re-expressed as
+//     TestFileServerRemote_ListBlobsByImage_PropagatesTransportError and
+//     TestFileServerRemote_ListBlobsByImage_AbsentIsSilent below.
+//   - TestFileServerRemote_ProbeBlob, _PropagatesTransportError: ProbeBlob folded
+//     into Stat (D10). Intent re-expressed as Stat tests below.
+//   - TestFileServerRemote_Blob_MultiChunkUnsupported,
+//     TestFileServerRemote_Blob_SingleChunkOK: meta-less Blob accessor removed.
+//     No clean mapping to PrepDownload+Open (the new surface already has coverage
+//     via TestFileServerRemote_PrepDownload_UsesMetaChunkSize). Deleted.
+//   - TestFileServerRemote_Dir_ReturnsSelf: Dir() removed. Intent re-expressed
+//     as TestFileServerRemote_BlobsTagsSelf (Blobs()/Tags() return self, D12).
 
 import (
 	"bytes"
@@ -171,7 +191,7 @@ func buildIndexJSON(t *testing.T, mDgst digest.Digest, mSize int64) []byte {
 
 func TestFileServerRemote_ReadOnly_False(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
 	if r.ReadOnly() {
 		t.Error("ReadOnly() = true, want false")
 	}
@@ -179,27 +199,15 @@ func TestFileServerRemote_ReadOnly_False(t *testing.T) {
 
 func TestFileServerRemote_Close_NoOp(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
 	if err := r.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
 }
 
-func TestFileServerRemote_ListImages_Error(t *testing.T) {
-	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
-	for _, err := range r.ListImages(context.Background()) {
-		if err == nil {
-			t.Error("ListImages: expected error, got nil")
-		}
-		return
-	}
-	t.Error("ListImages: expected at least one error yield")
-}
-
 func TestFileServerRemote_LoadImage_NoOp(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
 	ref, _ := imageref.Parse("example.com/repo:v1")
 	if err := r.LoadImage(context.Background(), ref); err != nil {
 		t.Errorf("LoadImage: %v", err)
@@ -208,28 +216,32 @@ func TestFileServerRemote_LoadImage_NoOp(t *testing.T) {
 
 func TestFileServerRemote_DumpImage_NoOp(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
+	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
 	ref, _ := imageref.Parse("example.com/repo:v1")
 	if err := r.DumpImage(context.Background(), ref); err != nil {
 		t.Errorf("DumpImage: %v", err)
 	}
 }
 
-func TestFileServerRemote_MkdirBlobParent_NoOp(t *testing.T) {
+// TestFileServerRemote_BlobsTagsSelf verifies that Blobs() and Tags() both
+// return the remote itself (D12: self-contained store — no indirection).
+func TestFileServerRemote_BlobsTagsSelf(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
-	dgst := digest.SHA256.FromBytes([]byte("test"))
-	if err := r.MkdirBlobParent(dgst); err != nil {
-		t.Errorf("MkdirBlobParent: %v", err)
+	r := newFSRemoteFromCfg(newFSTestClient(), DefaultChunkSize)
+	if r.Blobs() != ociimagecopy.BlobStore(r) {
+		t.Error("Blobs() did not return self")
+	}
+	if r.Tags() != ociimagecopy.TagStoreV1(r) {
+		t.Error("Tags() did not return self")
 	}
 }
 
-// TestFileServerRemote_PutTagFile_AccumulationAndCommit verifies:
+// TestFileServerRemote_PutIndex_PutOciLayout_AccumulationAndCommit verifies:
 //   - Putting oci-layout alone does NOT write the meta.
 //   - Putting index.json (the second file) triggers exactly one meta Put.
 //   - The meta Put name matches DefaultNaming.ImageMeta(ref).
 //   - The meta contains correct descriptors (manifest+config+layer).
-func TestFileServerRemote_PutTagFile_AccumulationAndCommit(t *testing.T) {
+func TestFileServerRemote_PutIndex_PutOciLayout_AccumulationAndCommit(t *testing.T) {
 	t.Parallel()
 
 	m := newFSTestClient()
@@ -255,16 +267,16 @@ func TestFileServerRemote_PutTagFile_AccumulationAndCommit(t *testing.T) {
 	initialPuts := len(m.putNames)
 
 	// Put oci-layout first — no meta yet.
-	if err := r.PutTagFile(context.Background(), ref, "oci-layout", layoutBytes); err != nil {
-		t.Fatalf("PutTagFile oci-layout: %v", err)
+	if err := r.PutOciLayout(context.Background(), ref, layoutBytes); err != nil {
+		t.Fatalf("PutOciLayout: %v", err)
 	}
 	if len(m.putNames) != initialPuts {
 		t.Errorf("meta was written after oci-layout only (got %d puts)", len(m.putNames))
 	}
 
 	// Put index.json — should trigger meta commit.
-	if err := r.PutTagFile(context.Background(), ref, "index.json", idxBytes); err != nil {
-		t.Fatalf("PutTagFile index.json: %v", err)
+	if err := r.PutIndex(context.Background(), ref, idxBytes); err != nil {
+		t.Fatalf("PutIndex: %v", err)
 	}
 
 	// Exactly one Put should have happened (the meta).
@@ -315,9 +327,9 @@ func TestFileServerRemote_PutTagFile_AccumulationAndCommit(t *testing.T) {
 	}
 }
 
-// TestFileServerRemote_PutTagFile_OrderIndependent verifies that putting
-// index.json FIRST then oci-layout still triggers the meta commit.
-func TestFileServerRemote_PutTagFile_OrderIndependent(t *testing.T) {
+// TestFileServerRemote_PutIndex_PutOciLayout_OrderIndependent verifies that
+// putting index.json FIRST then oci-layout still triggers the meta commit.
+func TestFileServerRemote_PutIndex_PutOciLayout_OrderIndependent(t *testing.T) {
 	t.Parallel()
 
 	m := newFSTestClient()
@@ -338,23 +350,23 @@ func TestFileServerRemote_PutTagFile_OrderIndependent(t *testing.T) {
 	ref, _ := imageref.Parse("example.com/test:latest")
 
 	// index.json first, then oci-layout.
-	if err := r.PutTagFile(context.Background(), ref, "index.json", idxBytes); err != nil {
-		t.Fatalf("PutTagFile index.json: %v", err)
+	if err := r.PutIndex(context.Background(), ref, idxBytes); err != nil {
+		t.Fatalf("PutIndex: %v", err)
 	}
 	if len(m.putNames) != 0 {
 		t.Errorf("meta written after index.json only (expected no puts yet)")
 	}
-	if err := r.PutTagFile(context.Background(), ref, "oci-layout", layoutBytes); err != nil {
-		t.Fatalf("PutTagFile oci-layout: %v", err)
+	if err := r.PutOciLayout(context.Background(), ref, layoutBytes); err != nil {
+		t.Fatalf("PutOciLayout: %v", err)
 	}
 	if len(m.putNames) != 1 {
 		t.Fatalf("expected 1 meta Put, got %d", len(m.putNames))
 	}
 }
 
-// TestFileServerRemote_PutTagFile_NoCrossImageLeak verifies that two refs
-// accumulate independently and each gets its own meta object.
-func TestFileServerRemote_PutTagFile_NoCrossImageLeak(t *testing.T) {
+// TestFileServerRemote_PutIndex_PutOciLayout_NoCrossImageLeak verifies that
+// two refs accumulate independently and each gets its own meta object.
+func TestFileServerRemote_PutIndex_PutOciLayout_NoCrossImageLeak(t *testing.T) {
 	t.Parallel()
 
 	m := newFSTestClient()
@@ -380,18 +392,18 @@ func TestFileServerRemote_PutTagFile_NoCrossImageLeak(t *testing.T) {
 	r := newFSRemoteFromCfg(m, 1024)
 
 	// Interleave: put one file from each ref before completing either.
-	_ = r.PutTagFile(context.Background(), ref1, "oci-layout", layout1)
-	_ = r.PutTagFile(context.Background(), ref2, "oci-layout", layout2)
+	_ = r.PutOciLayout(context.Background(), ref1, layout1)
+	_ = r.PutOciLayout(context.Background(), ref2, layout2)
 	if len(m.putNames) != 0 {
 		t.Fatal("meta written too early (after first file for each ref)")
 	}
 
-	_ = r.PutTagFile(context.Background(), ref1, "index.json", idx1)
+	_ = r.PutIndex(context.Background(), ref1, idx1)
 	if len(m.putNames) != 1 {
 		t.Fatalf("expected 1 meta after ref1 complete, got %d", len(m.putNames))
 	}
 
-	_ = r.PutTagFile(context.Background(), ref2, "index.json", idx2)
+	_ = r.PutIndex(context.Background(), ref2, idx2)
 	if len(m.putNames) != 2 {
 		t.Fatalf("expected 2 metas after both refs complete, got %d", len(m.putNames))
 	}
@@ -402,25 +414,27 @@ func TestFileServerRemote_PutTagFile_NoCrossImageLeak(t *testing.T) {
 	}
 }
 
-// TestFileServerRemote_ReadOnly_PutTagFile verifies PutTagFile returns ociimagecopy.ErrReadOnly.
-func TestFileServerRemote_ReadOnly_PutTagFile(t *testing.T) {
+// TestFileServerRemote_ReadOnly_PutOciLayout verifies PutOciLayout returns
+// ociimagecopy.ErrReadOnly on a read-only remote.
+func TestFileServerRemote_ReadOnly_PutOciLayout(t *testing.T) {
 	t.Parallel()
 	r := newFSRemoteReadOnly(newFSTestClient())
 	ref, _ := imageref.Parse("example.com/repo:v1")
-	err := r.PutTagFile(context.Background(), ref, "oci-layout", []byte("{}"))
+	err := r.PutOciLayout(context.Background(), ref, []byte("{}"))
 	if err != ociimagecopy.ErrReadOnly {
-		t.Errorf("PutTagFile on read-only: got %v, want ociimagecopy.ErrReadOnly", err)
+		t.Errorf("PutOciLayout on read-only: got %v, want ociimagecopy.ErrReadOnly", err)
 	}
 }
 
-// TestFileServerRemote_ReadOnly_BlobSink verifies BlobSink returns ociimagecopy.ErrReadOnly.
-func TestFileServerRemote_ReadOnly_BlobSink(t *testing.T) {
+// TestFileServerRemote_ReadOnly_PrepUpload verifies PrepUpload returns
+// ociimagecopy.ErrReadOnly on a read-only remote.
+func TestFileServerRemote_ReadOnly_PrepUpload(t *testing.T) {
 	t.Parallel()
 	r := newFSRemoteReadOnly(newFSTestClient())
 	dgst := digest.SHA256.FromBytes([]byte("x"))
-	_, err := r.BlobSink(context.Background(), dgst, 1)
+	_, err := r.PrepUpload(context.Background(), dgst, 1)
 	if err != ociimagecopy.ErrReadOnly {
-		t.Errorf("BlobSink on read-only: got %v, want ociimagecopy.ErrReadOnly", err)
+		t.Errorf("PrepUpload on read-only: got %v, want ociimagecopy.ErrReadOnly", err)
 	}
 }
 
@@ -527,9 +541,11 @@ func TestFileServerRemote_InspectImage_DigestMismatch(t *testing.T) {
 	}
 }
 
-// TestFileServerRemote_ListBlobs_FromMeta verifies that after the meta is
-// consulted via InspectImage, the descriptors appear in ListBlobs.
-func TestFileServerRemote_ListBlobs_FromMeta(t *testing.T) {
+// TestFileServerRemote_ListBlobsByImage_FromMeta verifies that after the meta
+// is consulted via a GetIndex/ListBlobsByImage call, the descriptors are
+// enumerable via ListBlobsByImage (replaces the deleted global ListBlobs test).
+// The count assertion (3 descriptors: manifest+config+layer) is preserved.
+func TestFileServerRemote_ListBlobsByImage_FromMeta(t *testing.T) {
 	t.Parallel()
 
 	m := newFSTestClient()
@@ -563,41 +579,60 @@ func TestFileServerRemote_ListBlobs_FromMeta(t *testing.T) {
 
 	r := newFSRemoteFromCfg(m, 1024)
 
-	// Before fetching meta, ListBlobs should return nothing.
-	count := 0
-	for _, err := range r.ListBlobs(context.Background()) {
-		if err != nil {
-			t.Fatalf("ListBlobs before meta: %v", err)
-		}
-		count++
-	}
-	if count != 0 {
-		t.Errorf("ListBlobs before meta: got %d blobs, want 0", count)
-	}
-
-	// Trigger meta fetch via InspectImage.
-	_, _ = r.InspectImage(context.Background(), ref)
-
-	// Now ListBlobs should return 3 descriptors.
+	// ListBlobsByImage reads the meta and yields the 3 descriptors.
 	var blobDigests []string
-	for d, err := range r.ListBlobs(context.Background()) {
+	for d, err := range r.ListBlobsByImage(context.Background(), ref) {
 		if err != nil {
-			t.Fatalf("ListBlobs after meta: %v", err)
+			t.Fatalf("ListBlobsByImage: %v", err)
 		}
 		blobDigests = append(blobDigests, string(d))
 	}
 	if len(blobDigests) != 3 {
-		t.Errorf("ListBlobs after meta: got %d blobs, want 3", len(blobDigests))
+		t.Errorf("ListBlobsByImage: got %d blobs, want 3", len(blobDigests))
 	}
 }
 
-// TestFileServerRemote_Dir_ReturnsSelf verifies Dir() returns the remote itself.
-func TestFileServerRemote_Dir_ReturnsSelf(t *testing.T) {
+// TestFileServerRemote_ListBlobsByImage_AbsentIsSilent verifies that an absent
+// meta (fs.ErrNotExist, e.g. a first push) yields nothing and is NOT an error.
+// (Replaces the deleted TestFileServerRemote_PrimeRefs_AbsentIsSilent.)
+func TestFileServerRemote_ListBlobsByImage_AbsentIsSilent(t *testing.T) {
 	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), ociimagecopy.DefaultChunkSize)
-	d := r.Dir()
-	if d != ociimagecopy.OciDirs(r) {
-		t.Error("Dir() did not return self")
+	r := newFSRemoteFromCfg(newFSTestClient(), 1024)
+	ref, _ := imageref.Parse("example.com/absent:v1")
+
+	count := 0
+	for _, err := range r.ListBlobsByImage(context.Background(), ref) {
+		if err != nil {
+			t.Fatalf("absent meta must be silent, got error: %v", err)
+		}
+		count++
+	}
+	if count != 0 {
+		t.Errorf("absent meta: expected 0 blobs, got %d", count)
+	}
+}
+
+// TestFileServerRemote_ListBlobsByImage_PropagatesTransportError verifies that
+// a non-ErrNotExist error fetching the meta (e.g. 401/5xx) is yielded by
+// ListBlobsByImage rather than silently read as "absent" (D14 intent: swallowing
+// it would downgrade a failed probe into "remote has nothing, send everything").
+// (Replaces the deleted TestFileServerRemote_PrimeRefs_PropagatesTransportError.)
+func TestFileServerRemote_ListBlobsByImage_PropagatesTransportError(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("HTTP 503 service unavailable")
+	r := NewFileServer(FileServerConfig{
+		Client: &errClient{err: boom},
+		Naming: fileserver.DefaultNaming{},
+	}).(*fileServerRemote)
+
+	ref, _ := imageref.Parse("example.com/probe:v1")
+	var yielded error
+	for _, err := range r.ListBlobsByImage(context.Background(), ref) {
+		yielded = err
+	}
+	if !errors.Is(yielded, boom) {
+		t.Fatalf("expected transport error propagated, got %v", yielded)
 	}
 }
 
@@ -674,14 +709,15 @@ func buildMetaWithChunkSize(
 	m.objects[naming.ImageMeta(ref)] = metaBytes
 }
 
-// TestFileServerRemote_BlobSource_UsesMetaChunkSize verifies that BlobSource
+// TestFileServerRemote_PrepDownload_UsesMetaChunkSize verifies that PrepDownload
 // uses the chunkSize recorded in the meta, not the remote's configured
-// chunkSize, when the blob was registered via getImageMeta.
+// chunkSize, when the blob was registered via getImageMeta (replaces the
+// deleted TestFileServerRemote_BlobSource_UsesMetaChunkSize).
 //
 // The test seeds a blob split across multiple chunks of size X (meta chunkSize),
-// while the remote is configured with a different chunkSize Y. BlobSource must
+// while the remote is configured with a different chunkSize Y. PrepDownload must
 // correctly read all bytes using chunkSize X.
-func TestFileServerRemote_BlobSource_UsesMetaChunkSize(t *testing.T) {
+func TestFileServerRemote_PrepDownload_UsesMetaChunkSize(t *testing.T) {
 	t.Parallel()
 
 	m := newFSTestClient()
@@ -708,15 +744,15 @@ func TestFileServerRemote_BlobSource_UsesMetaChunkSize(t *testing.T) {
 		t.Fatalf("getImageMeta: %v", err)
 	}
 
-	// Now BlobSource should use metaChunkSize (3), not remoteChunkSize (1024).
-	src, err := r.BlobSource(context.Background(), dgst, int64(len(blobData)))
+	// Now PrepDownload should use metaChunkSize (3), not remoteChunkSize (1024).
+	src, err := r.PrepDownload(context.Background(), dgst, int64(len(blobData)))
 	if err != nil {
-		t.Fatalf("BlobSource: %v", err)
+		t.Fatalf("PrepDownload: %v", err)
 	}
 
 	rc, _, err := src.Open(context.Background(), 0)
 	if err != nil {
-		t.Fatalf("BlobSource.Open: %v", err)
+		t.Fatalf("PrepDownload.Open: %v", err)
 	}
 	defer rc.Close()
 
@@ -726,59 +762,7 @@ func TestFileServerRemote_BlobSource_UsesMetaChunkSize(t *testing.T) {
 	}
 
 	if !bytes.Equal(got, blobData) {
-		t.Errorf("BlobSource content mismatch:\ngot  %q\nwant %q", got, blobData)
-	}
-}
-
-// TestFileServerRemote_PrimeRefs verifies that PrimeRefs loads blob metadata
-// (including chunkSize) into blobsFromMeta for refs that exist on the server,
-// and silently skips refs that are absent.
-func TestFileServerRemote_PrimeRefs(t *testing.T) {
-	t.Parallel()
-
-	m := newFSTestClient()
-	naming := fileserver.DefaultNaming{}
-
-	const chunkSize = int64(7)
-
-	blobData := []byte("prime test data")
-	dgst := digest.SHA256.FromBytes(blobData)
-
-	ref1, _ := imageref.Parse("example.com/prime:v1")
-	ref2, _ := imageref.Parse("example.com/prime:notexist") // absent
-
-	buildMetaWithChunkSize(t, m, naming, ref1, []fileserver.MetaDescriptor{
-		{Digest: dgst.String(), Size: int64(len(blobData))},
-	}, chunkSize)
-
-	r := newFSRemoteFromCfg(m, 1024)
-
-	// Before priming, blobsFromMeta should be empty.
-	r.mu.Lock()
-	initialLen := len(r.blobsFromMeta)
-	r.mu.Unlock()
-	if initialLen != 0 {
-		t.Errorf("blobsFromMeta before PrimeRefs: got %d, want 0", initialLen)
-	}
-
-	err := r.PrimeRefs(context.Background(), []imageref.ImageRef{ref1, ref2})
-	if err != nil {
-		t.Fatalf("PrimeRefs: %v", err)
-	}
-
-	// After priming, blobsFromMeta should contain the blob from ref1.
-	r.mu.Lock()
-	info, ok := r.blobsFromMeta[dgst.String()]
-	r.mu.Unlock()
-
-	if !ok {
-		t.Fatal("blobsFromMeta: blob from ref1 not registered after PrimeRefs")
-	}
-	if info.chunkSize != chunkSize {
-		t.Errorf("blobsFromMeta chunkSize = %d, want %d", info.chunkSize, chunkSize)
-	}
-	if info.size != int64(len(blobData)) {
-		t.Errorf("blobsFromMeta size = %d, want %d", info.size, len(blobData))
+		t.Errorf("PrepDownload content mismatch:\ngot  %q\nwant %q", got, blobData)
 	}
 }
 
@@ -790,7 +774,7 @@ func TestNewFileServerFromSpec_MalformedHeaderRedacted(t *testing.T) {
 
 	secret := "sk-super-secret-token-no-colon"
 	u, _ := url.Parse("http://example.com")
-	spec := &ociimagecopy.FileServerRemoteSpec{
+	spec := &FileServerRemoteSpec{
 		URL:     u,
 		Headers: []string{secret},
 	}
@@ -827,103 +811,10 @@ func (c *errClient) Put(_ context.Context, _ string, _ int64, _ io.Reader) error
 
 var _ fsfileserver.Client = (*errClient)(nil)
 
-// TestFileServerRemote_PrimeRefs_PropagatesTransportError verifies that a
-// non-ErrNotExist error fetching the meta (e.g. 401/5xx) is propagated by
-// PrimeRefs rather than silently read as "absent" (decision D14): swallowing it
-// would downgrade a failed probe into "remote has nothing, send everything".
-func TestFileServerRemote_PrimeRefs_PropagatesTransportError(t *testing.T) {
-	t.Parallel()
-
-	boom := errors.New("HTTP 503 service unavailable")
-	r := NewFileServer(FileServerConfig{
-		Client: &errClient{err: boom},
-		Naming: fileserver.DefaultNaming{},
-	}).(*fileServerRemote)
-
-	ref, _ := imageref.Parse("example.com/probe:v1")
-	err := r.PrimeRefs(context.Background(), []imageref.ImageRef{ref})
-	if !errors.Is(err, boom) {
-		t.Fatalf("expected transport error propagated, got %v", err)
-	}
-}
-
-// TestFileServerRemote_PrimeRefs_AbsentIsSilent verifies that an absent meta
-// (fs.ErrNotExist, e.g. a first push) is NOT an error.
-func TestFileServerRemote_PrimeRefs_AbsentIsSilent(t *testing.T) {
-	t.Parallel()
-	r := newFSRemoteFromCfg(newFSTestClient(), 1024)
-	ref, _ := imageref.Parse("example.com/absent:v1")
-	if err := r.PrimeRefs(context.Background(), []imageref.ImageRef{ref}); err != nil {
-		t.Fatalf("absent meta should be silent, got %v", err)
-	}
-}
-
-// TestFileServerRemote_ProbeBlob_PropagatesTransportError verifies that a
-// transport error from the State probe is surfaced, not treated as incomplete.
-func TestFileServerRemote_ProbeBlob_PropagatesTransportError(t *testing.T) {
-	t.Parallel()
-
-	boom := errors.New("HTTP 401 unauthorized")
-	r := NewFileServer(FileServerConfig{
-		Client: &errClient{err: boom},
-		Naming: fileserver.DefaultNaming{},
-	}).(*fileServerRemote)
-
-	dgst := digest.SHA256.FromBytes([]byte("x"))
-	_, err := r.ProbeBlob(context.Background(), dgst, 10)
-	if !errors.Is(err, boom) {
-		t.Fatalf("expected transport error propagated, got %v", err)
-	}
-}
-
-// TestFileServerRemote_Blob_MultiChunkUnsupported verifies the meta-less Blob
-// accessor refuses a multi-chunk blob with ErrMultiChunkBlobUnsupported instead
-// of silently returning only chunk 0.
-func TestFileServerRemote_Blob_MultiChunkUnsupported(t *testing.T) {
-	t.Parallel()
-
-	m := newFSTestClient()
-	naming := fileserver.DefaultNaming{}
-	const chunkSize = 4
-	blobData := []byte("abcdefgh") // 8 bytes -> 2 chunks of 4
-	dgst := seedBlobChunked(t, m, naming, blobData, chunkSize)
-
-	r := newFSRemoteFromCfg(m, chunkSize)
-	_, _, err := r.Blob(context.Background(), dgst, 0)
-	if !errors.Is(err, ErrMultiChunkBlobUnsupported) {
-		t.Fatalf("expected ErrMultiChunkBlobUnsupported, got %v", err)
-	}
-}
-
-// TestFileServerRemote_Blob_SingleChunkOK verifies the meta-less Blob accessor
-// still serves a single-chunk blob.
-func TestFileServerRemote_Blob_SingleChunkOK(t *testing.T) {
-	t.Parallel()
-
-	m := newFSTestClient()
-	naming := fileserver.DefaultNaming{}
-	blobData := []byte("short") // fits one chunk
-	seedBlobFS(t, m, naming, blobData)
-	dgst := digest.SHA256.FromBytes(blobData)
-
-	r := newFSRemoteFromCfg(m, 1024)
-	rc, total, err := r.Blob(context.Background(), dgst, 0)
-	if err != nil {
-		t.Fatalf("Blob: %v", err)
-	}
-	defer rc.Close()
-	got, _ := io.ReadAll(rc)
-	if !bytes.Equal(got, blobData) {
-		t.Errorf("Blob content = %q, want %q", got, blobData)
-	}
-	if total != int64(len(blobData)) {
-		t.Errorf("Blob total = %d, want %d", total, len(blobData))
-	}
-}
-
-// TestFileServerRemote_ProbeBlob verifies ProbeBlob returns true when all
-// blob chunks are present on the server, and false when a chunk is missing.
-func TestFileServerRemote_ProbeBlob(t *testing.T) {
+// TestFileServerRemote_Stat_Complete verifies Stat returns CurrentSize==Size
+// when all blob chunks are present on the server. (Replaces the ProbeBlob
+// "complete=true" case, per D10.)
+func TestFileServerRemote_Stat_Complete(t *testing.T) {
 	t.Parallel()
 
 	m := newFSTestClient()
@@ -942,26 +833,76 @@ func TestFileServerRemote_ProbeBlob(t *testing.T) {
 	r := newFSRemoteFromCfg(m, 1024) // remote configured with a different chunkSize
 
 	// Prime the meta so blobsFromMeta has the correct chunkSize.
-	if err := r.PrimeRefs(context.Background(), []imageref.ImageRef{ref}); err != nil {
-		t.Fatalf("PrimeRefs: %v", err)
+	_, err := r.getImageMeta(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("getImageMeta: %v", err)
 	}
 
-	// All chunks present → complete = true.
-	complete, err := r.ProbeBlob(context.Background(), dgst, int64(len(blobData)))
+	// All chunks present → complete (CurrentSize == Size).
+	info, err := r.Stat(context.Background(), dgst, int64(len(blobData)))
 	if err != nil {
-		t.Fatalf("ProbeBlob (complete): %v", err)
+		t.Fatalf("Stat (complete): %v", err)
 	}
-	if !complete {
-		t.Error("ProbeBlob: expected complete=true when all chunks present")
+	if info.CurrentSize != info.Size {
+		t.Errorf("Stat: complete blob expected CurrentSize==Size, got %d / %d",
+			info.CurrentSize, info.Size)
+	}
+	if info.Size != int64(len(blobData)) {
+		t.Errorf("Stat: Size = %d, want %d", info.Size, len(blobData))
+	}
+}
+
+// TestFileServerRemote_Stat_MissingChunk verifies Stat returns fs.ErrNotExist
+// when the blob is entirely absent (offset == 0, !complete). (Replaces the
+// ProbeBlob "complete=false" case, per D10.)
+func TestFileServerRemote_Stat_MissingChunk(t *testing.T) {
+	t.Parallel()
+
+	m := newFSTestClient()
+	naming := fileserver.DefaultNaming{}
+
+	const chunkSize = int64(4)
+	blobData := []byte("abcdefgh") // 8 bytes → 2 chunks of 4
+
+	dgst := seedBlobChunked(t, m, naming, blobData, int(chunkSize))
+
+	ref, _ := imageref.Parse("example.com/probe:missing")
+	buildMetaWithChunkSize(t, m, naming, ref, []fileserver.MetaDescriptor{
+		{Digest: dgst.String(), Size: int64(len(blobData))},
+	}, chunkSize)
+
+	r := newFSRemoteFromCfg(m, 1024)
+
+	// Prime the meta.
+	_, err := r.getImageMeta(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("getImageMeta: %v", err)
 	}
 
-	// Remove chunk 1 → complete = false.
-	delete(m.objects, naming.BlobChunk(dgst, 1))
-	complete, err = r.ProbeBlob(context.Background(), dgst, int64(len(blobData)))
-	if err != nil {
-		t.Fatalf("ProbeBlob (incomplete): %v", err)
+	// Remove chunk 0 → entirely absent → fs.ErrNotExist.
+	delete(m.objects, naming.BlobChunk(dgst, 0))
+	_, err = r.Stat(context.Background(), dgst, int64(len(blobData)))
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Stat on absent blob: expected fs.ErrNotExist, got %v", err)
 	}
-	if complete {
-		t.Error("ProbeBlob: expected complete=false when chunk 1 is missing")
+}
+
+// TestFileServerRemote_Stat_PropagatesTransportError verifies that a
+// transport error from the State probe is surfaced by Stat, not treated as
+// incomplete or mapped to ErrNotExist. (Replaces the deleted
+// TestFileServerRemote_ProbeBlob_PropagatesTransportError, per D10.)
+func TestFileServerRemote_Stat_PropagatesTransportError(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("HTTP 401 unauthorized")
+	r := NewFileServer(FileServerConfig{
+		Client: &errClient{err: boom},
+		Naming: fileserver.DefaultNaming{},
+	}).(*fileServerRemote)
+
+	dgst := digest.SHA256.FromBytes([]byte("x"))
+	_, err := r.Stat(context.Background(), dgst, 10)
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected transport error propagated, got %v", err)
 	}
 }

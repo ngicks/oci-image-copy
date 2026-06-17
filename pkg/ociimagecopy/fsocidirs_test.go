@@ -15,8 +15,8 @@ import (
 
 // TestFsOciDirs_RoundTrip_Local walks every image in
 // internal/testdata/ocidir/, builds an [FsOciDirs] over it, and
-// exercises the full read surface: [OciDirs.ListImages],
-// [OciDirs.Image] → [ocidir.ReadManifest], and [OciDirs.Blob] for
+// exercises the full read surface: [ListImagesFromFs],
+// [NewImageView] → [ocidir.ReadManifest], and blob reads for
 // every digest in the closure. Each blob's bytes are re-hashed and
 // compared against the digest the manifest claims.
 //
@@ -43,8 +43,8 @@ func TestFsOciDirs_RoundTrip_Local(t *testing.T) {
 		}
 		images++
 		t.Run(ref.String(), func(t *testing.T) {
-			img := dirs.Image(ref)
-			mDesc, man, err := ocidir.ReadManifest(ctx, img)
+			view := NewImageView(ctx, dirs, dirs, ref)
+			mDesc, man, err := ocidir.ReadManifest(ctx, view)
 			if err != nil {
 				t.Fatalf("ReadManifest %s: %v", ref.String(), err)
 			}
@@ -60,11 +60,17 @@ func TestFsOciDirs_RoundTrip_Local(t *testing.T) {
 				if d.Digest == "" {
 					continue
 				}
-				rc, size, err := dirs.Blob(ctx, d.Digest, 0)
+				src, err := dirs.PrepDownload(ctx, d.Digest, d.Size)
 				if err != nil {
-					t.Errorf("Blob %s: %v", d.Digest, err)
+					t.Errorf("PrepDownload %s: %v", d.Digest, err)
 					continue
 				}
+				rc, info, err := src.Open(ctx, 0)
+				if err != nil {
+					t.Errorf("open blob %s: %v", d.Digest, err)
+					continue
+				}
+				size := info.Size
 				verifier := d.Digest.Verifier()
 				n, err := io.Copy(verifier, rc)
 				rc.Close()
@@ -74,10 +80,8 @@ func TestFsOciDirs_RoundTrip_Local(t *testing.T) {
 				}
 				if d.Size > 0 && size != d.Size {
 					t.Errorf(
-						"blob %s size mismatch: blob.Stat=%d, descriptor=%d",
-						d.Digest,
-						size,
-						d.Size,
+						"blob %s size mismatch: source=%d, descriptor=%d",
+						d.Digest, size, d.Size,
 					)
 				}
 				if d.Size > 0 && n != d.Size {
@@ -96,6 +100,8 @@ func TestFsOciDirs_RoundTrip_Local(t *testing.T) {
 
 // TestFsOciDirs_BlobOffset_Local reads a real layer blob at various
 // offsets and asserts the suffix matches a from-zero read.
+// Uses unionShareInventory (internal) to find a blob without ListBlobsFromFs
+// (which was removed from production).
 func TestFsOciDirs_BlobOffset_Local(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join("..", "..", "internal", "testdata", "ocidir")
@@ -109,28 +115,36 @@ func TestFsOciDirs_BlobOffset_Local(t *testing.T) {
 	dirs := NewFsOciDirs(fsys, 1)
 	ctx := context.Background()
 
-	// Pick the first digest we find via ListBlobs.
+	// Find the first blob in share/ without ListBlobsFromFs.
+	inv := make(map[string]struct{})
+	if err := unionShareInventory(inv, fsys, "share"); err != nil {
+		t.Fatal(err)
+	}
 	var pick digest.Digest
-	for d, err := range ListBlobsFromFs(ctx, fsys) {
-		if err != nil {
-			t.Fatal(err)
-		}
-		pick = d
+	for d := range inv {
+		pick = digest.Digest(d)
 		break
 	}
 	if pick == "" {
 		t.Skip("no blobs in testdata")
 	}
 
-	rc, size, err := dirs.Blob(ctx, pick, 0)
+	// Open at offset 0 to get the full blob and its size.
+	src0, err := dirs.PrepDownload(ctx, pick, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	full, err := io.ReadAll(rc)
-	rc.Close()
+	rc0, info, err := src0.Open(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	full, err := io.ReadAll(rc0)
+	rc0.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := info.Size
+
 	if int64(len(full)) != size {
 		t.Fatalf("got %d bytes, size=%d", len(full), size)
 	}
@@ -139,9 +153,14 @@ func TestFsOciDirs_BlobOffset_Local(t *testing.T) {
 		if off < 0 || off > size {
 			continue
 		}
-		rc, _, err := dirs.Blob(ctx, pick, off)
+		src, err := dirs.PrepDownload(ctx, pick, 0)
 		if err != nil {
-			t.Errorf("Blob at offset %d: %v", off, err)
+			t.Errorf("PrepDownload at offset %d: %v", off, err)
+			continue
+		}
+		rc, _, err := src.Open(ctx, off)
+		if err != nil {
+			t.Errorf("Open at offset %d: %v", off, err)
 			continue
 		}
 		got, err := io.ReadAll(rc)

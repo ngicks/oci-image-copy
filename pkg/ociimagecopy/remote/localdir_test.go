@@ -2,11 +2,28 @@ package remote
 
 // localdir_test.go exercises the localDirRemote implementation:
 //   - NewLocalDir construction
-//   - ListBlobs / ListImages — via shared fs-walk helpers
+//   - ListBlobsByImage — per-image blob closure (replaces global ListBlobs, which
+//     was removed per D4/D5).
+//   - ListImagesFromFs — via ociimagecopy.ListImagesFromFs (replaces
+//     Remote.ListImages, which was removed per D4).
 //   - InspectImage — raw manifest bytes from mirror
 //   - LoadImage / DumpImage — no-op assertions
+//   - Tags().PutOciLayout — tag-file write (replaces r.Dir().PutTagFile)
 //   - ReadOnly false
 //   - Close no-op
+//
+// DELETED (with reasons):
+//   - TestLocalDirRemote_ListBlobs_Empty, TestLocalDirRemote_ListBlobs_Seeded:
+//     global Remote.ListBlobs removed (D4). Intent re-expressed as
+//     TestLocalDirRemote_ListBlobsByImage_Empty and
+//     TestLocalDirRemote_ListBlobsByImage_Seeded below.
+//   - TestLocalDirRemote_ListImages_Seeded: Remote.ListImages removed (D4).
+//     Intent re-expressed as TestLocalDirRemote_ListImagesFromFs_Seeded using
+//     ociimagecopy.ListImagesFromFs (the helper is kept and exported, per PLAN).
+//   - TestLocalDirRemote_Dir_PutTagFile: Dir() removed (D12). Intent
+//     re-expressed as TestLocalDirRemote_Tags_PutOciLayout using
+//     r.Tags().PutOciLayout, which writes via FsOciDirs.PutOciLayout → the
+//     same dump dir path the old Dir().PutTagFile used.
 
 import (
 	"context"
@@ -77,27 +94,30 @@ func TestLocalDirRemote_DumpImage_NoOp(t *testing.T) {
 	}
 }
 
-// TestLocalDirRemote_ListBlobs_Empty verifies ListBlobs on an empty store
-// yields nothing (no error, no items).
-func TestLocalDirRemote_ListBlobs_Empty(t *testing.T) {
+// TestLocalDirRemote_ListBlobsByImage_Empty verifies ListBlobsByImage on an
+// empty store (no image seeded) yields nothing and no error.
+// (Replaces the deleted TestLocalDirRemote_ListBlobs_Empty, per D4/D5.)
+func TestLocalDirRemote_ListBlobsByImage_Empty(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
 	r := buildLocalDirRemote(t, base)
+	ref, _ := imageref.Parse("example.com/absent:v1")
 	count := 0
-	for _, err := range r.ListBlobs(context.Background()) {
+	for _, err := range r.ListBlobsByImage(context.Background(), ref) {
 		if err != nil {
-			t.Fatalf("ListBlobs: unexpected error: %v", err)
+			t.Fatalf("ListBlobsByImage: unexpected error: %v", err)
 		}
 		count++
 	}
 	if count != 0 {
-		t.Errorf("ListBlobs on empty store: got %d blobs, want 0", count)
+		t.Errorf("ListBlobsByImage on absent image: got %d blobs, want 0", count)
 	}
 }
 
-// TestLocalDirRemote_ListBlobs_Seeded verifies ListBlobs returns the blobs
-// placed into the share/ dir.
-func TestLocalDirRemote_ListBlobs_Seeded(t *testing.T) {
+// TestLocalDirRemote_ListBlobsByImage_Seeded verifies ListBlobsByImage returns
+// the blobs in the seeded image's manifest closure. (Replaces the deleted
+// TestLocalDirRemote_ListBlobs_Seeded, per D4/D5.)
+func TestLocalDirRemote_ListBlobsByImage_Seeded(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
 	tagDir := filepath.Join(base, "ghcr.io", "a", "b", "_tags", "v1")
@@ -105,16 +125,17 @@ func TestLocalDirRemote_ListBlobs_Seeded(t *testing.T) {
 	seedDump(t, tagDir, shareDir)
 
 	r := buildLocalDirRemote(t, base)
+	ref, _ := imageref.Parse("ghcr.io/a/b:v1")
 
 	var digests []string
-	for d, err := range r.ListBlobs(context.Background()) {
+	for d, err := range r.ListBlobsByImage(context.Background(), ref) {
 		if err != nil {
-			t.Fatalf("ListBlobs: %v", err)
+			t.Fatalf("ListBlobsByImage: %v", err)
 		}
 		digests = append(digests, string(d))
 	}
 	if len(digests) == 0 {
-		t.Fatal("ListBlobs: expected some blobs, got 0")
+		t.Fatal("ListBlobsByImage: expected some blobs, got 0")
 	}
 	// All returned digests must start with "sha256:"
 	for _, d := range digests {
@@ -124,26 +145,31 @@ func TestLocalDirRemote_ListBlobs_Seeded(t *testing.T) {
 	}
 }
 
-// TestLocalDirRemote_ListImages_Seeded verifies ListImages returns the image
-// refs placed via seedDump.
-func TestLocalDirRemote_ListImages_Seeded(t *testing.T) {
+// TestLocalDirRemote_ListImagesFromFs_Seeded verifies that
+// ociimagecopy.ListImagesFromFs finds the image refs placed via seedDump.
+// (Replaces the deleted TestLocalDirRemote_ListImages_Seeded — Remote.ListImages
+// was removed in D4, but ListImagesFromFs is kept as a package-level helper.)
+func TestLocalDirRemote_ListImagesFromFs_Seeded(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
 	tagDir := filepath.Join(base, "ghcr.io", "a", "b", "_tags", "v1")
 	shareDir := filepath.Join(base, "share")
 	seedDump(t, tagDir, shareDir)
 
-	r := buildLocalDirRemote(t, base)
+	fsys, err := ociimagecopy.NewOsFs(base)
+	if err != nil {
+		t.Fatalf("NewOsFs: %v", err)
+	}
 
 	var images []imageref.ImageRef
-	for img, err := range r.ListImages(context.Background()) {
+	for img, err := range ociimagecopy.ListImagesFromFs(context.Background(), fsys) {
 		if err != nil {
-			t.Fatalf("ListImages: %v", err)
+			t.Fatalf("ListImagesFromFs: %v", err)
 		}
 		images = append(images, img)
 	}
 	if len(images) == 0 {
-		t.Fatal("ListImages: expected at least 1 image, got 0")
+		t.Fatal("ListImagesFromFs: expected at least 1 image, got 0")
 	}
 	found := false
 	for _, img := range images {
@@ -152,7 +178,7 @@ func TestLocalDirRemote_ListImages_Seeded(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected ghcr.io/a/b:v1 in ListImages, got %v", images)
+		t.Errorf("expected ghcr.io/a/b:v1 in ListImagesFromFs, got %v", images)
 	}
 }
 
@@ -194,26 +220,28 @@ func TestLocalDirRemote_InspectImage_Missing(t *testing.T) {
 	}
 }
 
-// TestLocalDirRemote_Dir_PutTagFile verifies the OciDirs surface writes
-// tag files correctly (PutTagFile creates the dump dir and writes the file).
-func TestLocalDirRemote_Dir_PutTagFile(t *testing.T) {
+// TestLocalDirRemote_Tags_PutOciLayout verifies that Tags().PutOciLayout writes
+// tag files correctly (creates the dump dir and writes the oci-layout file).
+// (Replaces the deleted TestLocalDirRemote_Dir_PutTagFile — Dir() was removed
+// in D12; Tags() returns the FsOciDirs which implements PutOciLayout.)
+func TestLocalDirRemote_Tags_PutOciLayout(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
 	r := buildLocalDirRemote(t, base)
 
 	ref, _ := imageref.Parse("example.com/test:latest")
 	data := []byte(`{"imageLayoutVersion":"1.0.0"}`)
-	if err := r.Dir().PutTagFile(context.Background(), ref, "oci-layout", data); err != nil {
-		t.Fatalf("PutTagFile: %v", err)
+	if err := r.Tags().PutOciLayout(context.Background(), ref, data); err != nil {
+		t.Fatalf("Tags().PutOciLayout: %v", err)
 	}
 	// Verify the file exists and has the right content.
 	got, err := os.ReadFile(
 		filepath.Join(base, "example.com", "test", "_tags", "latest", "oci-layout"),
 	)
 	if err != nil {
-		t.Fatalf("ReadFile after PutTagFile: %v", err)
+		t.Fatalf("ReadFile after Tags().PutOciLayout: %v", err)
 	}
 	if string(got) != string(data) {
-		t.Errorf("PutTagFile content = %q, want %q", got, data)
+		t.Errorf("Tags().PutOciLayout content = %q, want %q", got, data)
 	}
 }

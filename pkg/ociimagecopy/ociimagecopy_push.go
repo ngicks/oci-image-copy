@@ -17,22 +17,6 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// RefPrimer is an optional interface that a [Remote]'s [OciDirs] may implement
-// to pre-load remote metadata for the refs being pushed, enabling accurate
-// dry-run plans and push remote-has resolution. The push orchestrator type-
-// asserts the peer's OciDirs against it; implementations live with the concrete
-// remotes (e.g. the file-server remote in package remote).
-type RefPrimer interface {
-	PrimeRefs(ctx context.Context, refs []imageref.ImageRef) error
-}
-
-// BlobProber is an optional interface that a [Remote]'s [OciDirs] may implement
-// to probe individual blobs for existence (via HEAD chunk probe).
-// Returns true if the blob is complete on the remote.
-type BlobProber interface {
-	ProbeBlob(ctx context.Context, dgst digest.Digest, size int64) (bool, error)
-}
-
 // PushArgs configures one [Local.Push] invocation. Flags surfaced via
 // the CLI (`cmd/oci-image-copy/commands/push.go`) map 1:1 to fields
 // on this struct; keep the cobra side a translation layer only.
@@ -106,7 +90,7 @@ func (l *Local) Push(ctx context.Context, args PushArgs, peer Remote) (PushResul
 		return PushResult{}, err
 	}
 
-	// Parse refs best-effort for RefPrimer.
+	// Parse refs best-effort to drive per-image remote-has resolution.
 	var parsedRefs []imageref.ImageRef
 	for _, raw := range args.Images {
 		if ref, err := imageref.Parse(raw); err == nil {
@@ -175,9 +159,13 @@ func validatePush(args PushArgs, local *Local, peer Remote) error {
 // resolveRemoteHas builds the peer-has set, honoring the assume-remote-has
 // shortcut.
 //
-// refs is the list of parsed image refs being pushed, used to prime the
-// remote's meta cache via [RefPrimer] when available. This enables accurate
-// dry-run plans and blob-level deduplication for file-server remotes.
+// refs is the list of parsed image refs being pushed. Dedup is scoped per
+// image, never whole-store: for each ref the peer's image closure is read via
+// [Remote.ListBlobsByImage] (one meta read for the fileserver; a manifest
+// closure read for fs remotes) to seed the has-set cheaply. The per-blob Stat
+// in pushOneBlob is the cross-image correctness backstop. ListBlobsByImage
+// itself swallows fs.ErrNotExist (absent image = empty), so any error it yields
+// is a real transport/auth/server failure and aborts.
 func resolveRemoteHas(
 	ctx context.Context,
 	args PushArgs,
@@ -195,20 +183,14 @@ func resolveRemoteHas(
 		return ds, nil
 	}
 
-	// Prime the remote's meta cache if the underlying OciDirs supports it.
-	// This loads chunkSize info and blob descriptors from existing image metas,
-	// enabling accurate ListBlobs output and correct BlobSource chunk sizes.
-	if primer, ok := peer.Dir().(RefPrimer); ok && len(refs) > 0 {
-		// Best-effort: ignore priming errors.
-		_ = primer.PrimeRefs(ctx, refs)
-	}
-
 	out := make(map[string]struct{})
-	for d, err := range peer.ListBlobs(ctx) {
-		if err != nil {
-			return nil, err
+	for _, ref := range refs {
+		for d, err := range peer.ListBlobsByImage(ctx, ref) {
+			if err != nil {
+				return nil, err
+			}
+			out[string(d)] = struct{}{}
 		}
-		out[string(d)] = struct{}{}
 	}
 	return out, nil
 }
@@ -248,22 +230,22 @@ func pushOne(
 	digestsSorted := sortedDigests(toSend)
 
 	if args.DryRun {
-		// In dry-run mode, use BlobProber (if available) to probe blobs that
-		// are not yet in remoteHas. This enables accurate Sent/Reused counts
-		// without any mutating operations.
-		if prober, ok := peer.Dir().(BlobProber); ok {
-			for _, d := range digestsSorted {
-				dgst := digest.Digest(d)
-				complete, err := prober.ProbeBlob(ctx, dgst, sizes[d])
-				if err == nil && complete {
-					// Blob is already fully present; move from toSend to reused.
-					delete(toSend, d)
-					rep.Reused++
-				}
+		// In dry-run mode, probe blobs that are not yet in remoteHas via the
+		// universal BlobStore.Stat. This enables accurate Sent/Reused counts
+		// without any mutating operations. Best-effort: a Stat error (including
+		// not-exist) leaves the blob in the plan — dry-run must not fail the
+		// whole image on a probe error.
+		for _, d := range digestsSorted {
+			dgst := digest.Digest(d)
+			bi, err := peer.Blobs().Stat(ctx, dgst, sizes[d])
+			if err == nil && bi.CurrentSize == bi.Size {
+				// Blob is already fully present; move from toSend to reused.
+				delete(toSend, d)
+				rep.Reused++
 			}
-			// Recompute digestsSorted after probing.
-			digestsSorted = sortedDigests(toSend)
 		}
+		// Recompute digestsSorted after probing.
+		digestsSorted = sortedDigests(toSend)
 
 		var bytesSent int64
 		for _, d := range digestsSorted {
@@ -287,7 +269,7 @@ func pushOne(
 	// the peer's tag dir references only blobs that are already fully present,
 	// which improves crash consistency for all transport backends.
 	blobs := toBlobTransfers(digestsSorted, sizes)
-	res, err := pushBlobs(ctx, blobs, local.fs, peer.Dir(), DefaultRemoteParallelism)
+	res, err := pushBlobs(ctx, blobs, local.fs, peer.Blobs(), DefaultRemoteParallelism)
 	if err != nil {
 		rep.Err = fmt.Errorf("put blobs: %w", err)
 		return rep
@@ -300,7 +282,7 @@ func pushOne(
 
 	// 2. Mirror tag-dir metadata files to the peer (commit step).
 	// Written after all blobs so the tag dir only references present blobs.
-	if err := mirrorTagFiles(ctx, local.fs, ref, peer.Dir()); err != nil {
+	if err := mirrorTagFiles(ctx, local.fs, ref, peer.Tags()); err != nil {
 		rep.Err = fmt.Errorf("tag-dir sync: %w", err)
 		return rep
 	}
@@ -327,7 +309,7 @@ func dumpAndDeriveClosurePush(
 
 	baseDir := local.baseDir
 	dstFS := local.fs
-	dstDirs := local.Dir()
+	dstStore := local.dirs
 	if args.DryRun {
 		tmp, err := os.MkdirTemp("", "oci-image-copy-dry-run-*")
 		if err != nil {
@@ -343,7 +325,7 @@ func dumpAndDeriveClosurePush(
 		}
 		baseDir = tmp
 		dstFS = fs
-		dstDirs = NewFsOciDirs(fs, DefaultLocalParallelism)
+		dstStore = NewFsOciDirs(fs, DefaultLocalParallelism)
 	}
 
 	store := NewStore(baseDir)
@@ -370,29 +352,36 @@ func dumpAndDeriveClosurePush(
 	); err != nil {
 		return v1.Descriptor{}, v1.Manifest{}, fmt.Errorf("skopeo copy: %w", err)
 	}
-	return ocidir.ReadManifest(ctx, dstDirs.Image(ref))
+	return ocidir.ReadManifest(ctx, NewImageView(ctx, dstStore, dstStore, ref))
 }
 
-// mirrorTagFiles ships oci-layout + index.json from srcFS's per-ref
-// tag dir to dst (the destination [OciDirs]).
+// mirrorTagFiles ships oci-layout + index.json from srcFS's per-ref tag dir to
+// dst (the destination [TagStoreV1]). Write order is oci-layout then
+// index.json: index.json is committed last so the destination tag dir /
+// fileserver commit marker only references already-present blobs.
 func mirrorTagFiles(
 	ctx context.Context,
 	srcFS vroot.Fs[vroot.File],
 	ref imageref.ImageRef,
-	dst OciDirs,
+	dst TagStoreV1,
 ) error {
 	rel, err := RelDumpDir(ref)
 	if err != nil {
 		return err
 	}
-	for _, name := range []string{"oci-layout", "index.json"} {
-		data, err := vroot.ReadFile(srcFS, path.Join(rel, name))
-		if err != nil {
-			return fmt.Errorf("read %s: %w", name, err)
-		}
-		if err := dst.PutTagFile(ctx, ref, name, data); err != nil {
-			return fmt.Errorf("put %s: %w", name, err)
-		}
+	layoutBytes, err := vroot.ReadFile(srcFS, path.Join(rel, "oci-layout"))
+	if err != nil {
+		return fmt.Errorf("read oci-layout: %w", err)
+	}
+	idxBytes, err := vroot.ReadFile(srcFS, path.Join(rel, "index.json"))
+	if err != nil {
+		return fmt.Errorf("read index.json: %w", err)
+	}
+	if err := dst.PutOciLayout(ctx, ref, layoutBytes); err != nil {
+		return fmt.Errorf("put oci-layout: %w", err)
+	}
+	if err := dst.PutIndex(ctx, ref, idxBytes); err != nil {
+		return fmt.Errorf("put index.json: %w", err)
 	}
 	return nil
 }

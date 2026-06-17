@@ -15,15 +15,17 @@ package remote
 //
 // Construction mirrors how sshRemote builds its FsOciDirs: create an
 // osfs-backed vroot.Fs rooted at the path, wire it into a FsOciDirs with
-// DefaultRemoteParallelism. ListBlobs and ListImages reuse the shared
-// ociimagecopy.ListBlobsFromFs / ListImagesFromFs helpers that sshRemote also
-// uses; InspectImage mirrors the sshRemote oci-transport branch (read the raw
-// manifest blob from the mirror). LoadImage and DumpImage are no-ops
-// (this transport IS the store — identical to sshRemote's oci: behaviour).
+// DefaultRemoteParallelism. ListBlobsByImage shares the [listBlobsByImageFromMirror]
+// helper that sshRemote also uses; InspectImage mirrors the sshRemote
+// oci-transport branch (read the raw manifest blob from the mirror). LoadImage
+// and DumpImage are no-ops (this transport IS the store — identical to
+// sshRemote's oci: behaviour).
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"iter"
 
 	"github.com/ngicks/go-fsys-helper/vroot"
@@ -70,21 +72,20 @@ func (r *localDirRemote) Close() error { return nil }
 // ReadOnly always returns false; the local-directory remote is writable.
 func (r *localDirRemote) ReadOnly() bool { return false }
 
-// Dir returns the [ociimagecopy.OciDirs] view over the local directory.
-func (r *localDirRemote) Dir() ociimagecopy.OciDirs { return r.dirs }
+// Blobs returns the [ociimagecopy.BlobStore] view over the local directory.
+func (r *localDirRemote) Blobs() ociimagecopy.BlobStore { return r.dirs }
 
-// ListBlobs implements [ociimagecopy.Remote]: walks share/sha256/* and yields
-// each digest. Reuses the shared [ociimagecopy.ListBlobsFromFs] helper (same
-// implementation as sshRemote).
-func (r *localDirRemote) ListBlobs(ctx context.Context) iter.Seq2[digest.Digest, error] {
-	return ociimagecopy.ListBlobsFromFs(ctx, r.fs)
-}
+// Tags returns the [ociimagecopy.TagStoreV1] view over the local directory.
+func (r *localDirRemote) Tags() ociimagecopy.TagStoreV1 { return r.dirs }
 
-// ListImages implements [ociimagecopy.Remote]: walks the per-image dump dirs
-// and yields each parsed [imageref.ImageRef]. Reuses the shared
-// [ociimagecopy.ListImagesFromFs] helper (same implementation as sshRemote).
-func (r *localDirRemote) ListImages(ctx context.Context) iter.Seq2[imageref.ImageRef, error] {
-	return ociimagecopy.ListImagesFromFs(ctx, r.fs)
+// ListBlobsByImage implements [ociimagecopy.Remote]: reads ref's manifest
+// closure from the mirror and yields each blob digest. Shares the
+// implementation with sshRemote via [listBlobsByImageFromMirror].
+func (r *localDirRemote) ListBlobsByImage(
+	ctx context.Context,
+	ref imageref.ImageRef,
+) iter.Seq2[digest.Digest, error] {
+	return listBlobsByImageFromMirror(ctx, r.dirs, ref)
 }
 
 // LoadImage is a no-op: for a local-directory remote the directory IS the
@@ -104,9 +105,39 @@ func (r *localDirRemote) InspectImage(ctx context.Context, ref imageref.ImageRef
 	// Read the raw, digest-verified manifest bytes via the shared ocidir
 	// choke point: it enforces the single-manifest contract (no unguarded
 	// Manifests[0]) and guarantees sha256(returned bytes) == manifest digest.
-	_, data, err := ocidir.ReadRawManifest(ctx, r.dirs.Image(ref))
+	_, data, err := ocidir.ReadRawManifest(ctx, ociimagecopy.NewImageView(ctx, r.dirs, r.dirs, ref))
 	if err != nil {
 		return nil, fmt.Errorf("local-dir remote: inspect %s: %w", ref.String(), err)
 	}
 	return data, nil
+}
+
+// listBlobsByImageFromMirror is the shared fs-backed [ociimagecopy.Remote.ListBlobsByImage]
+// implementation for the SSH and local-directory remotes. It reads ref's
+// manifest closure from the mirror via [ocidir.ReadManifest] over a
+// [ociimagecopy.NewImageView] and yields each digest from
+// [ocidir.AllDescriptors]. An absent image — a manifest read error that
+// satisfies errors.Is(err, fs.ErrNotExist) OR
+// errors.Is(err, ocidir.ErrMissingManifestBlob) — yields nothing; any other
+// error is yielded once.
+func listBlobsByImageFromMirror(
+	ctx context.Context,
+	dirs *ociimagecopy.FsOciDirs,
+	ref imageref.ImageRef,
+) iter.Seq2[digest.Digest, error] {
+	return func(yield func(digest.Digest, error) bool) {
+		mDesc, man, err := ocidir.ReadManifest(ctx, ociimagecopy.NewImageView(ctx, dirs, dirs, ref))
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, ocidir.ErrMissingManifestBlob) {
+				return
+			}
+			yield(digest.Digest(""), err)
+			return
+		}
+		for _, d := range ocidir.AllDescriptors(mDesc, man) {
+			if !yield(d.Digest, nil) {
+				return
+			}
+		}
+	}
 }

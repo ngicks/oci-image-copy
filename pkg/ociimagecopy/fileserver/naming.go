@@ -1,6 +1,6 @@
 // Package fileserver implements the file-server Remote for oci-image-copy
 // (Layer 2 of PLAN3). It wires the generic stream/fileserver client and
-// chunked adapters into the OCI Remote / OciDirs abstraction.
+// chunked adapters into the OCI Remote / StoreV1 abstraction.
 //
 // Object naming is controlled by a [NamingConvention]; the default
 // [DefaultNaming] produces:

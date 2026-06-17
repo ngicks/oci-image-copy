@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"iter"
-	"path"
 	"strings"
 
 	"github.com/ngicks/go-fsys-helper/vroot"
@@ -15,7 +13,7 @@ import (
 )
 
 // ErrReadOnly is returned by [Remote.LoadImage], [Remote.DumpImage], and the
-// write side of [OciDirs] when the peer is read-only.
+// write side of [BlobStore] / [TagStoreV1] when the peer is read-only.
 var ErrReadOnly = errors.New("remote: read-only")
 
 // Remote is an OCI store the orchestrator can read from and (when not
@@ -35,17 +33,20 @@ type Remote interface {
 	// should be rejected.
 	ReadOnly() bool
 
-	// Dir returns the multi-image OCI store this Remote backs.
-	Dir() OciDirs
+	// Blobs returns the content-addressed blob pool ([BlobStore]) this
+	// Remote backs.
+	Blobs() BlobStore
 
-	// ListBlobs enumerates every content-addressed blob the peer
-	// holds: image manifests, image configs, and fs layers across all
-	// images stored in this Remote. Order is unspecified.
-	ListBlobs(ctx context.Context) iter.Seq2[digest.Digest, error]
+	// Tags returns the per-tag pointer-file store ([TagStoreV1]) this
+	// Remote backs.
+	Tags() TagStoreV1
 
-	// ListImages enumerates the image refs this Remote hosts. Use
-	// Dir().Image(ref) to read each image's per-image OCI layout.
-	ListImages(ctx context.Context) iter.Seq2[imageref.ImageRef, error]
+	// ListBlobsByImage enumerates the content-addressed blobs in ref's image
+	// closure as the peer knows them (the fileserver: meta.Descriptors, one
+	// read; fs remotes: the manifest closure). Cost is closure-sized, not
+	// store-sized. An absent image yields nothing (no error); only real
+	// transport/auth/server errors are yielded. Order is unspecified.
+	ListBlobsByImage(ctx context.Context, ref imageref.ImageRef) iter.Seq2[digest.Digest, error]
 
 	// LoadImage tells the peer to load ref's content from its OCI
 	// mirror into its live storage (containers-storage / docker-
@@ -55,9 +56,9 @@ type Remote interface {
 	LoadImage(ctx context.Context, ref imageref.ImageRef) error
 
 	// DumpImage materializes ref from the peer's live storage into the
-	// peer's content-addressable store (the mirror), so that
-	// Dir().Image(ref) and the blob set behind it become readable.
-	// It is the inverse of LoadImage.
+	// peer's content-addressable store (the mirror), so that the per-ref
+	// view via [NewImageView] over Tags()/Blobs() and the blob set behind it
+	// become readable. It is the inverse of LoadImage.
 	//
 	//   - Implementations backed by a live storage (containers-storage /
 	//     docker-daemon over SSH) run the equivalent of
@@ -87,42 +88,6 @@ type Remote interface {
 	//   - Mirror-only implementations read the manifest from the store
 	//     directly.
 	InspectImage(ctx context.Context, ref imageref.ImageRef) ([]byte, error)
-}
-
-// ListBlobsFromFs walks fs/share/sha256/* and yields each digest. It is the
-// shared blob-enumeration helper for the FS-backed [Remote] implementations
-// (the SSH and local-directory remotes in package remote).
-func ListBlobsFromFs(
-	ctx context.Context,
-	fsys vroot.Fs[vroot.File],
-) iter.Seq2[digest.Digest, error] {
-	return func(yield func(digest.Digest, error) bool) {
-		algoDir := path.Join(RelSharePath(), "sha256")
-		entries, err := vroot.ReadDir(fsys, algoDir)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return
-			}
-			yield(digest.Digest(""), err)
-			return
-		}
-		for _, e := range entries {
-			if err := ctx.Err(); err != nil {
-				yield(digest.Digest(""), err)
-				return
-			}
-			if e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if len(name) != digest.SHA256.Size()*2 {
-				continue
-			}
-			if !yield(digest.Digest(digest.SHA256.String()+":"+name), nil) {
-				return
-			}
-		}
-	}
 }
 
 // ListImagesFromFs walks fs for <host>/<repo>/_tags/<tag> and

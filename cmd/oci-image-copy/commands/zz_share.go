@@ -14,7 +14,7 @@ import (
 // spec. They supplement the URL parsed from the spec.
 type fileServerOpts struct {
 	headers      []string
-	chunkSize    string // human-readable (parsed by ociimagecopy.ParseChunkSize)
+	chunkSize    string // human-readable (parsed by remote.ParseChunkSize)
 	namingPrefix string
 	// auth carries the resolved file-server Authorization header value (from the
 	// service config, defaults < file < env). It is added as
@@ -66,24 +66,24 @@ func buildRemote(
 	remoteSpec string,
 	fsOpts fileServerOpts,
 ) (ociimagecopy.Remote, error) {
-	rs, err := ociimagecopy.ParseRemoteSpec(remoteSpec)
+	rs, err := remote.ParseRemoteSpec(remoteSpec)
 	if err != nil {
 		return nil, err
 	}
 
 	switch rs.Kind {
-	case ociimagecopy.RemoteKindSSH:
+	case remote.RemoteKindSSH:
 		return buildSSHRemote(ctx, rs.SSH)
-	case ociimagecopy.RemoteKindLocalDir:
+	case remote.RemoteKindLocalDir:
 		return remote.NewLocalDir(rs.LocalDir.Path)
-	case ociimagecopy.RemoteKindFileServer:
+	case remote.RemoteKindFileServer:
 		spec := rs.FileServer
 		// Merge companion flag values into the spec.
 		if len(fsOpts.headers) > 0 {
 			spec.Headers = fsOpts.headers
 		}
 		if fsOpts.chunkSize != "" {
-			cs, err := ociimagecopy.ParseChunkSize(fsOpts.chunkSize)
+			cs, err := remote.ParseChunkSize(fsOpts.chunkSize)
 			if err != nil {
 				return nil, fmt.Errorf("--remote-chunk-size: %w", err)
 			}
@@ -130,7 +130,7 @@ func validateEnumerableLocal(flag string, ls ociimagecopy.LocalSpec) error {
 }
 
 // buildSSHRemote validates and dials the SSH-backed remote from a parsed spec.
-func buildSSHRemote(ctx context.Context, spec *ociimagecopy.SSHRemoteSpec) (ociimagecopy.Remote, error) {
+func buildSSHRemote(ctx context.Context, spec *remote.SSHRemoteSpec) (ociimagecopy.Remote, error) {
 	if err := validateSSHTarget(spec.Target); err != nil {
 		return nil, err
 	}

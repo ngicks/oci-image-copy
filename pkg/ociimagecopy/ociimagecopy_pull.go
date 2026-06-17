@@ -2,7 +2,6 @@ package ociimagecopy
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -203,7 +202,7 @@ func pullOne(
 			}
 		}
 		var err error
-		mDesc, man, err = ocidir.ReadManifest(ctx, peer.Dir().Image(ref))
+		mDesc, man, err = ocidir.ReadManifest(ctx, NewImageView(ctx, peer.Tags(), peer.Blobs(), ref))
 		if err != nil {
 			if dumpSkippedReadOnly {
 				rep.Err = fmt.Errorf(
@@ -259,7 +258,7 @@ func pullOne(
 	// which improves crash consistency for all transport backends.
 	blobs := toBlobTransfers(digestsSorted, sizes)
 	res, err := pullBlobs(
-		ctx, blobs, peer.Dir(), local.fs, local.Dir(),
+		ctx, blobs, peer.Blobs(), local.fs, local.Blobs(),
 		DefaultLocalParallelism, args.VerifyReusedBlobs,
 	)
 	if err != nil {
@@ -274,7 +273,7 @@ func pullOne(
 
 	// 2. Mirror tag-dir metadata files from peer to local (commit step).
 	// Written after all blobs so the local tag dir only references present blobs.
-	if err := mirrorTagFilesFromPeer(ctx, peer.Dir(), ref, local.Dir()); err != nil {
+	if err := mirrorTagFilesFromPeer(ctx, peer.Tags(), ref, local.Tags()); err != nil {
 		rep.Err = fmt.Errorf("tag-dir sync: %w", err)
 		return rep
 	}
@@ -287,53 +286,31 @@ func pullOne(
 	return rep
 }
 
-// mirrorTagFilesFromPeer reads index.json + oci-layout from peer's
-// tag dir and writes them to local's tag dir via [OciDirs.PutTagFile].
-// When the source DirV1 implements [ocidir.RawAccessor], the verbatim raw bytes
-// are used directly to preserve byte-true digest math. Otherwise the typed
-// accessors are used and the result is re-marshalled (fallback path).
+// mirrorTagFilesFromPeer reads the verbatim index.json + oci-layout bytes from
+// the peer's [TagStoreV1] and writes them to the local [TagStoreV1]. The bytes
+// round-trip untouched (no parse/re-marshal), preserving byte-true digest math.
+//
+// Write order is oci-layout then index.json: index.json is committed last so a
+// fs tag dir / fileserver commit marker only references already-present blobs
+// (commit-last semantics, §D14).
 func mirrorTagFilesFromPeer(
 	ctx context.Context,
-	src OciDirs,
+	srcTags TagStoreV1,
 	ref imageref.ImageRef,
-	dst OciDirs,
+	dstTags TagStoreV1,
 ) error {
-	srcDir := src.Image(ref)
-
-	var idxBytes, layoutBytes []byte
-	if raw, ok := srcDir.(ocidir.RawAccessor); ok {
-		var err error
-		idxBytes, err = raw.RawIndex()
-		if err != nil {
-			return fmt.Errorf("read peer index.json (raw): %w", err)
-		}
-		layoutBytes, err = raw.RawImageLayout()
-		if err != nil {
-			return fmt.Errorf("read peer oci-layout (raw): %w", err)
-		}
-	} else {
-		idx, err := srcDir.Index()
-		if err != nil {
-			return fmt.Errorf("read peer index.json: %w", err)
-		}
-		layout, err := srcDir.ImageLayout()
-		if err != nil {
-			return fmt.Errorf("read peer oci-layout: %w", err)
-		}
-		var marshalErr error
-		idxBytes, marshalErr = json.MarshalIndent(idx, "", "  ")
-		if marshalErr != nil {
-			return fmt.Errorf("marshal index.json: %w", marshalErr)
-		}
-		layoutBytes, marshalErr = json.Marshal(layout)
-		if marshalErr != nil {
-			return fmt.Errorf("marshal oci-layout: %w", marshalErr)
-		}
+	idxBytes, err := srcTags.GetIndex(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("read peer index.json: %w", err)
 	}
-	if err := dst.PutTagFile(ctx, ref, "oci-layout", layoutBytes); err != nil {
+	layoutBytes, err := srcTags.GetOciLayout(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("read peer oci-layout: %w", err)
+	}
+	if err := dstTags.PutOciLayout(ctx, ref, layoutBytes); err != nil {
 		return fmt.Errorf("put oci-layout: %w", err)
 	}
-	if err := dst.PutTagFile(ctx, ref, "index.json", idxBytes); err != nil {
+	if err := dstTags.PutIndex(ctx, ref, idxBytes); err != nil {
 		return fmt.Errorf("put index.json: %w", err)
 	}
 	return nil

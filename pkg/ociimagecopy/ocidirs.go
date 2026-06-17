@@ -2,64 +2,86 @@ package ociimagecopy
 
 import (
 	"context"
-	"io"
 
 	"github.com/ngicks/go-fsys-helper/fsutil"
 	"github.com/ngicks/oci-image-copy/pkg/imageref"
-	"github.com/ngicks/oci-image-copy/pkg/ocidir"
 	"github.com/opencontainers/go-digest"
 )
 
-// OciDirs is a multi-image OCI store. It dispatches per-image reads
-// via [OciDirs.Image] (returning an [ocidir.DirV1] view scoped to one
-// image's tag dir) and exposes the shared blob pool — the union of
-// every image's content-addressed storage — via [OciDirs.Blob].
+// The OCI store is split into two small consumer-side interfaces by concern:
 //
-// Write operations are driven by callers that obtain a [fsutil.ResumableSource]
-// or [fsutil.ResumableSink] per blob and invoke the fsutil resumable
-// Pull/Push primitives directly. [OciDirs.PutTagFile] writes a single
-// small per-image metadata file.
-type OciDirs interface {
-	// Blob reads from the shared blob pool. size is the total blob
-	// size (not bytes remaining from offset); callers comparing
-	// against a descriptor compare descriptor.Size against size, not
-	// against bytes consumed from rc. Returns [os.ErrNotExist] when
-	// the blob is missing.
-	Blob(
-		ctx context.Context,
-		d digest.Digest,
-		offset int64,
-	) (rc io.ReadCloser, size int64, err error)
+//   - [BlobStore] is the content-addressed blob pool — large, streamed,
+//     resumable bytes keyed by digest. It is version-agnostic by construction
+//     (no V1 suffix): a plain content-addressable pool with no planned V2.
+//   - [TagStoreV1] holds the per-tag pointer files (index.json / oci-layout) —
+//     tiny, whole-file, verbatim bytes. The V1 suffix marks the
+//     OCI-image-layout-v1-specific surface, leaving room for a V2 layout.
+//
+// [StoreV1] is the full OCI image-layout v1 store: both halves combined.
 
-	// Image returns an [ocidir.DirV1] view scoped to ref's tag dir
-	// (its own index.json + oci-layout, blobs delegating to the
-	// shared pool). Existence is not checked here; the first
-	// Index() / Blob() call surfaces "not found".
-	Image(ref imageref.ImageRef) ocidir.DirV1
+// BlobStore is the content-addressed blob pool: large, streamed, resumable
+// bytes keyed by digest. Reads and writes obtain a resumable handle per blob
+// and drive the fsutil Pull/Push primitives directly; [BlobStore.Stat] reports
+// presence/resume state without transferring bytes.
+type BlobStore interface {
+	// Stat reports how much of the blob identified by dgst is present, modeled
+	// on [os.Stat]. size is the total expected blob size (the caller supplies
+	// it from the descriptor; a backend that cannot independently confirm the
+	// total echoes it back in [BlobInfo.Size]).
+	//
+	//   - nothing present → an error satisfying errors.Is(err, fs.ErrNotExist);
+	//   - partial → BlobInfo{CurrentSize, Size} with 0 < CurrentSize < Size;
+	//   - complete → BlobInfo{CurrentSize: Size, Size}.
+	//
+	// CurrentSize doubles as the resume offset.
+	Stat(ctx context.Context, dgst digest.Digest, size int64) (BlobInfo, error)
 
-	// BlobSource returns a [fsutil.ResumableSource] for the blob
-	// identified by dgst and size. The source reads from this OciDirs'
-	// shared blob pool. It is used by the pull direction (caller reads
-	// from this store and writes to another).
-	BlobSource(ctx context.Context, dgst digest.Digest, size int64) (fsutil.ResumableSource, error)
+	// PrepDownload returns a [fsutil.ResumableSource] for the blob identified
+	// by dgst and size. The source reads from this store's blob pool. Used by
+	// the pull direction (caller reads from this store and writes to another).
+	PrepDownload(ctx context.Context, dgst digest.Digest, size int64) (fsutil.ResumableSource, error)
 
-	// BlobSink returns a [fsutil.ResumableSink] for the blob identified
-	// by dgst and size. The sink writes into this OciDirs' shared blob
-	// pool. It is used by the push direction (caller writes into this
-	// store from another source).
-	BlobSink(ctx context.Context, dgst digest.Digest, size int64) (fsutil.ResumableSink, error)
+	// PrepUpload returns a [fsutil.ResumableSink] for the blob identified by
+	// dgst and size. The sink writes into this store's blob pool, creating any
+	// parent directory the backend requires. Used by the push direction
+	// (caller writes into this store from another source).
+	PrepUpload(ctx context.Context, dgst digest.Digest, size int64) (fsutil.ResumableSink, error)
+}
 
-	// MkdirBlobParent ensures the parent directory of the blob identified
-	// by dgst exists in this store (e.g. share/sha256/). Must be called
-	// before writing a blob via [BlobSink] or Pull, since the fsutil
-	// primitives do not create parent directories.
-	MkdirBlobParent(dgst digest.Digest) error
+// TagStoreV1 holds the per-tag pointer files (index.json / oci-layout) as
+// verbatim bytes — no parse/re-marshal round-trip, so a mirror preserves the
+// source's exact bytes. index.json and oci-layout are separate method pairs
+// because index.json is mutable (repeated saves to the same ref append
+// manifests; merge is the caller's policy) while oci-layout is a write-once
+// version marker.
+type TagStoreV1 interface {
+	// GetIndex returns the verbatim index.json bytes for ref, or an error
+	// satisfying errors.Is(err, fs.ErrNotExist) when absent.
+	GetIndex(ctx context.Context, ref imageref.ImageRef) ([]byte, error)
+	// PutIndex writes the verbatim index.json bytes for ref.
+	PutIndex(ctx context.Context, ref imageref.ImageRef, raw []byte) error
+	// GetOciLayout returns the verbatim oci-layout bytes for ref, or an error
+	// satisfying errors.Is(err, fs.ErrNotExist) when absent.
+	GetOciLayout(ctx context.Context, ref imageref.ImageRef) ([]byte, error)
+	// PutOciLayout writes the verbatim oci-layout bytes for ref.
+	PutOciLayout(ctx context.Context, ref imageref.ImageRef, raw []byte) error
+}
 
-	// PutTagFile writes a single small per-image metadata file
-	// (e.g. "index.json" or "oci-layout") under ref's tag dir. Used
-	// for the two well-known files only; manifest / config / layer
-	// blobs go through [BlobSource] / [BlobSink].
-	PutTagFile(ctx context.Context, ref imageref.ImageRef, name string, data []byte) error
+// StoreV1 is a full OCI image-layout v1 store: the content-addressed blob pool
+// ([BlobStore]) plus the per-tag pointer files ([TagStoreV1]).
+type StoreV1 interface {
+	BlobStore
+	TagStoreV1
+}
+
+// BlobInfo reports how much of a blob a [BlobStore] currently holds.
+type BlobInfo struct {
+	// CurrentSize is the number of bytes currently present at the store (the
+	// resume point).
+	CurrentSize int64
+	// Size is the total expected blob size; the blob is complete iff
+	// CurrentSize == Size.
+	Size int64
 }
 
 // PutBlobsResult summarizes a blob-transfer run.

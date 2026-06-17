@@ -3,9 +3,10 @@
 // ([NewLocalDir]), and the HTTP file-server remote ([NewFileServer] /
 // [NewFileServerFromSpec]).
 //
-// The [ociimagecopy.Remote] / [ociimagecopy.OciDirs] abstractions, the shared
-// OCI-store helpers, and the spec types all live in package ociimagecopy; this
-// package depends on it and never the other way around (no import cycle).
+// The [ociimagecopy.Remote] / [ociimagecopy.BlobStore] / [ociimagecopy.TagStoreV1]
+// abstractions and the shared OCI-store helpers live in package ociimagecopy;
+// the --remote spec types and parser live in this package (no import cycle:
+// this package depends on ociimagecopy and never the other way around).
 package remote
 
 import (
@@ -83,7 +84,7 @@ type sshRemote struct {
 // NewSSH spawns `ssh -s sftp`, wires its pipes into a sftp client
 // via [sftp.NewClientPipe], starts the force-close goroutine, then
 // resolves BaseDir on the remote and builds an FS rooted at BaseDir
-// plus the [ociimagecopy.OciDirs] view over it (parallelism =
+// plus the [ociimagecopy.FsOciDirs] store over it (parallelism =
 // [ociimagecopy.DefaultRemoteParallelism]).
 func NewSSH(ctx context.Context, cfg SSHConfig) (ociimagecopy.Remote, error) {
 	if cfg.Transport == "" {
@@ -274,19 +275,22 @@ func (r *sshRemote) resolveBaseDir(ctx context.Context, ociPath string) (string,
 // peer.
 func (r *sshRemote) ReadOnly() bool { return false }
 
-// Dir implements [ociimagecopy.Remote].
-func (r *sshRemote) Dir() ociimagecopy.OciDirs { return r.dirs }
+// Blobs implements [ociimagecopy.Remote].
+func (r *sshRemote) Blobs() ociimagecopy.BlobStore { return r.dirs }
 
-// ListBlobs implements [ociimagecopy.Remote]: walks `share/sha256/*` on the
-// peer's FS and yields every digest found.
-func (r *sshRemote) ListBlobs(ctx context.Context) iter.Seq2[digest.Digest, error] {
-	return ociimagecopy.ListBlobsFromFs(ctx, r.fs)
-}
+// Tags implements [ociimagecopy.Remote].
+func (r *sshRemote) Tags() ociimagecopy.TagStoreV1 { return r.dirs }
 
-// ListImages implements [ociimagecopy.Remote]: walks the peer's per-image dump
-// dirs and yields each parsed [imageref.ImageRef].
-func (r *sshRemote) ListImages(ctx context.Context) iter.Seq2[imageref.ImageRef, error] {
-	return ociimagecopy.ListImagesFromFs(ctx, r.fs)
+// ListBlobsByImage implements [ociimagecopy.Remote]: reads ref's manifest
+// closure from the peer's mirror and yields each blob digest. An absent image
+// (the manifest read returns [fs.ErrNotExist] or
+// [ocidir.ErrMissingManifestBlob]) yields nothing; any other error is yielded
+// once.
+func (r *sshRemote) ListBlobsByImage(
+	ctx context.Context,
+	ref imageref.ImageRef,
+) iter.Seq2[digest.Digest, error] {
+	return listBlobsByImageFromMirror(ctx, r.dirs, ref)
 }
 
 // LoadImage implements [ociimagecopy.Remote] by running
@@ -353,7 +357,7 @@ func (r *sshRemote) InspectImage(ctx context.Context, ref imageref.ImageRef) ([]
 		// bytes (not re-marshalled JSON) so the sha256 digest of the returned
 		// bytes equals the manifest digest in index.json; ReadRawManifest also
 		// enforces the single-manifest contract (no unguarded Manifests[0]).
-		_, data, err := ocidir.ReadRawManifest(ctx, r.dirs.Image(ref))
+		_, data, err := ocidir.ReadRawManifest(ctx, ociimagecopy.NewImageView(ctx, r.dirs, r.dirs, ref))
 		if err != nil {
 			return nil, fmt.Errorf("remote: inspect image %s: %w", ref.String(), err)
 		}

@@ -8,6 +8,10 @@ package ociimagecopy
 //  2. Digest mismatch: source serves wrong bytes → Pull fails via sha256 hook,
 //     part file is cleaned up so retry restarts.
 //  3. Blob enumeration excludes .part and .part.etag files.
+//
+// NOTE: TestBlobEnumeration_ExcludesPartFiles was deleted because
+// ListBlobsFromFs has been removed from production. The unionShareInventory
+// half of the coverage is preserved in TestBlobEnumeration_OCI_ExcludesPartFiles.
 
 import (
 	"context"
@@ -79,7 +83,7 @@ func TestTransfer_Resume_AppendNotRewrite(t *testing.T) {
 
 	dgst := digest.Digest("sha256:" + realLayer1Hex)
 	info := fsutil.ContentInfo{ETag: dgst.String(), Size: 2}
-	src, err := remoteDirs.BlobSource(context.Background(), dgst, 2)
+	src, err := remoteDirs.PrepDownload(context.Background(), dgst, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +111,9 @@ func TestTransfer_Resume_AppendNotRewrite(t *testing.T) {
 		t.Errorf(".part.etag file should be gone after commit; stat=%v", err)
 	}
 
-	// Verify the part file was indeed appended: the local_dirs shouldn't
-	// need to re-enumerate; we simply confirm the 1-byte state was extended
-	// to 2 bytes by checking the final file content and the fact that it
-	// was not present before (only .part was).
-	_ = localDirs // used indirectly above via MkdirBlobParent
+	// Verify the part file was indeed appended: we simply confirm the
+	// 1-byte state was extended to 2 bytes by checking the final file.
+	_ = localDirs
 }
 
 // countingSource is a ResumableSource that counts how many bytes were read
@@ -170,7 +172,7 @@ func TestTransfer_Resume_OffsetIsNonZero(t *testing.T) {
 	dgst := digest.Digest("sha256:" + realLayer1Hex)
 	info := fsutil.ContentInfo{ETag: dgst.String(), Size: 2}
 
-	rawSrc, err := remoteDirs.BlobSource(context.Background(), dgst, 2)
+	rawSrc, err := remoteDirs.PrepDownload(context.Background(), dgst, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +224,7 @@ func TestTransfer_DigestMismatch(t *testing.T) {
 	// source level, leaving the integrity check to the sha256 hook.
 	info := fsutil.ContentInfo{ETag: dgst.String(), Size: 2}
 
-	rawSrc, err := remoteDirs.BlobSource(context.Background(), dgst, 2)
+	rawSrc, err := remoteDirs.PrepDownload(context.Background(), dgst, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +287,7 @@ func TestTransfer_DigestMismatch_RetryRestarts(t *testing.T) {
 	opt := makePullOpt(dgst)
 
 	// First attempt should fail.
-	src1, _ := remoteDirs.BlobSource(context.Background(), dgst, 2)
+	src1, _ := remoteDirs.PrepDownload(context.Background(), dgst, 2)
 	_ = opt.Pull(context.Background(), localFS, blobPath, src1, info, 0o644)
 
 	// Now fix the remote to serve correct bytes.
@@ -299,7 +301,7 @@ func TestTransfer_DigestMismatch_RetryRestarts(t *testing.T) {
 	)
 
 	// Second attempt should succeed.
-	src2, err := remoteDirs.BlobSource(context.Background(), dgst, 2)
+	src2, err := remoteDirs.PrepDownload(context.Background(), dgst, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,67 +325,6 @@ func TestTransfer_DigestMismatch_RetryRestarts(t *testing.T) {
 	}
 	if string(got) != realLayer1Content {
 		t.Errorf("final content = %q, want %q", got, realLayer1Content)
-	}
-}
-
-// TestBlobEnumeration_ExcludesPartFiles verifies that ListBlobsFromFs and
-// unionShareInventory ignore .part and .part.etag files when enumerating
-// the blob inventory.
-func TestBlobEnumeration_ExcludesPartFiles(t *testing.T) {
-	t.Parallel()
-
-	tmp := t.TempDir()
-	shareSha := filepath.Join(tmp, "share", "sha256")
-	must(t, os.MkdirAll(shareSha, 0o755))
-
-	// Write a real blob, a .part file, and a .part.etag sidecar.
-	realHex := realLayer1Hex
-	must(t, os.WriteFile(filepath.Join(shareSha, realHex), []byte(realLayer1Content), 0o644))
-	must(t, os.WriteFile(filepath.Join(shareSha, realHex+".part"), []byte("L"), 0o644))
-	must(
-		t,
-		os.WriteFile(
-			filepath.Join(shareSha, realHex+".part.etag"),
-			[]byte("sha256:"+realHex),
-			0o644,
-		),
-	)
-
-	fsys, err := NewOsFs(tmp)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Test ListBlobsFromFs.
-	ctx := context.Background()
-	var found []digest.Digest
-	for d, err := range ListBlobsFromFs(ctx, fsys) {
-		if err != nil {
-			t.Fatalf("ListBlobsFromFs: %v", err)
-		}
-		found = append(found, d)
-	}
-	if len(found) != 1 {
-		t.Errorf("ListBlobsFromFs: expected 1 blob, got %d: %v", len(found), found)
-	}
-	if len(found) > 0 && found[0] != digest.Digest("sha256:"+realHex) {
-		t.Errorf("ListBlobsFromFs: got %v, want sha256:%s", found[0], realHex)
-	}
-
-	// Test unionShareInventory.
-	out := make(map[string]struct{})
-	if err := unionShareInventory(out, fsys, "share"); err != nil {
-		t.Fatalf("unionShareInventory: %v", err)
-	}
-	if len(out) != 1 {
-		t.Errorf("unionShareInventory: expected 1 blob, got %d: %v", len(out), sortedKeys(out))
-	}
-	if _, ok := out["sha256:"+realHex]; !ok {
-		t.Errorf(
-			"unionShareInventory: expected sha256:%s in result, got %v",
-			realHex,
-			sortedKeys(out),
-		)
 	}
 }
 

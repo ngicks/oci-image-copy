@@ -31,8 +31,26 @@ go.work.sum
 # .idea/
 # .vscode/
 
+/pkg/ocidir/testdata/
+/internal/testdata/ocidir/
+
+# APM dependencies
+apm_modules/
 
 /.agents
 /.claude
-# APM dependencies
-apm_modules/
+/.codex
+/.github/instructions
+/.github/skills
+
+/bin
+/cmdman
+/muxctltester
+
+/CLAUDE_*.md
+/CODEX_*.md
+
+CLAUDE.md
+AGENTS.md
+
+.$*.bkp

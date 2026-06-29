@@ -6,4 +6,4 @@ package ociimagecopy
 //
 // Edit by hand only when the release helper is unavailable (e.g. cherry-pick
 // of a release commit).
-const Version = "v0.0.0-devel"
+const Version = "v0.0.1"

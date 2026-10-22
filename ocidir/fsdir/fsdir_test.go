@@ -1,6 +1,7 @@
 package fsdir_test
 
 import (
+	"path"
 	"testing"
 
 	"github.com/ngicks/go-fsys-helper/vroot/memfs"
@@ -17,7 +18,27 @@ func TestDir(t *testing.T) {
 	if err := ocidirtest.Write(fsys, f.Files); err != nil {
 		t.Fatal(err)
 	}
-	ocidirtest.TestOciDir(t, fsdir.New(fsys), f)
+	ocidirtest.TestOciDir(t, fsdir.New(fsys, nil), f)
+}
+
+func TestDir_sharedBlob(t *testing.T) {
+	f := ocidirtest.New()
+	layout, shared := map[string][]byte{}, map[string][]byte{}
+	for name, b := range f.Files {
+		if dgst, ok := ocidirtest.BlobDigest(name); ok {
+			shared[path.Join(dgst.Algorithm().String(), dgst.Encoded())] = b
+		} else {
+			layout[name] = b
+		}
+	}
+	fsys, sharedFsys := memfs.New("layout"), memfs.New("shared")
+	if err := ocidirtest.Write(fsys, layout); err != nil {
+		t.Fatal(err)
+	}
+	if err := ocidirtest.Write(sharedFsys, shared); err != nil {
+		t.Fatal(err)
+	}
+	ocidirtest.TestOciDir(t, fsdir.New(fsys, sharedFsys), f)
 }
 
 func TestUbuntu_Local(t *testing.T) {
@@ -26,7 +47,7 @@ func TestUbuntu_Local(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = root.Close() })
-	dir := fsdir.New(root)
+	dir := fsdir.New(root, nil)
 
 	seq, err := ocidir.AllImages(t.Context(), dir)
 	if err != nil {

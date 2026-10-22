@@ -24,7 +24,7 @@ func newDir(t *testing.T, files map[string][]byte) ocidir.OciDir {
 	if err := ocidirtest.Write(fsys, files); err != nil {
 		t.Fatal(err)
 	}
-	return fsdir.New(fsys)
+	return fsdir.New(fsys, nil)
 }
 
 func blobsOf(img ocidirtest.Image) []digest.Digest {

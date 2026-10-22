@@ -17,11 +17,17 @@ import (
 var _ ocidir.OciDir = (*Dir[vroot.File])(nil)
 
 type Dir[F vroot.File] struct {
-	fsys vroot.Fs[F]
+	fsys       vroot.Fs[F]
+	sharedBlob vroot.Fs[F]
 }
 
-func New[F vroot.File](fsys vroot.Fs[F]) *Dir[F] {
-	return &Dir[F]{fsys: fsys}
+// New returns a Dir reading the oci-dir rooted at fsys.
+//
+// sharedBlob is a shared blob directory laid out as "<alg>/<hex>",
+// the layout skopeo writes for --dest-shared-blob-dir.
+// When sharedBlob is nil, blobs are read from "blobs/<alg>/<hex>" under fsys.
+func New[F vroot.File](fsys vroot.Fs[F], sharedBlob vroot.Fs[F]) *Dir[F] {
+	return &Dir[F]{fsys: fsys, sharedBlob: sharedBlob}
 }
 
 type file[F vroot.File] struct {
@@ -48,9 +54,15 @@ func (d *Dir[F]) Blobs(ctx context.Context, dgst digest.Digest) (ocidir.ReadAtCl
 	if err := dgst.Validate(); err != nil {
 		return nil, err
 	}
-	f, err := d.fsys.Open(
-		path.Join(ocispec.ImageBlobsDir, dgst.Algorithm().String(), dgst.Encoded()),
+	blobs, name := d.fsys, path.Join(
+		ocispec.ImageBlobsDir,
+		dgst.Algorithm().String(),
+		dgst.Encoded(),
 	)
+	if d.sharedBlob != nil {
+		blobs, name = d.sharedBlob, path.Join(dgst.Algorithm().String(), dgst.Encoded())
+	}
+	f, err := blobs.Open(name)
 	if err != nil {
 		return nil, err
 	}

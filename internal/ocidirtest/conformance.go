@@ -89,7 +89,7 @@ func TestOciDir(t *testing.T, dir ocidir.OciDir, f Fixture) {
 	}
 
 	for name, want := range f.Files {
-		dgst, ok := blobDigest(name)
+		dgst, ok := BlobDigest(name)
 		if !ok {
 			continue
 		}
@@ -187,7 +187,8 @@ func TestSameAs(t *testing.T, want, got ocidir.OciDir) {
 	}
 }
 
-func blobDigest(name string) (digest.Digest, bool) {
+// BlobDigest parses an oci-dir relative path "blobs/<alg>/<hex>" into its digest.
+func BlobDigest(name string) (digest.Digest, bool) {
 	dir, enc := path.Split(name)
 	alg := path.Base(path.Clean(dir))
 	if path.Dir(path.Clean(dir)) != ocispec.ImageBlobsDir {

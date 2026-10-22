@@ -24,6 +24,11 @@ type ReadAtCloser interface {
 // Implementations return an error wrapping [io/fs.ErrNotExist]
 // when the requested entry is missing.
 type OciDir interface {
+	// Blobs opens the blob dgst.
+	//
+	// Remote implementations keep ctx for the reader's later ReadAt calls,
+	// because io.ReaderAt takes no context;
+	// cancelling ctx fails reads on the returned reader.
 	Blobs(ctx context.Context, dgst digest.Digest) (ReadAtCloser, error)
 	Index(ctx context.Context) (ocispec.Index, error)
 	OciLayout(ctx context.Context) (ocispec.ImageLayout, error)

@@ -2,69 +2,29 @@ package ocidir_test
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"reflect"
 	"slices"
 	"testing"
 
+	"github.com/ngicks/go-fsys-helper/vroot/memfs"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/ngicks/oci-image-copy/internal/ocidirtest"
 	"github.com/ngicks/oci-image-copy/ocidir"
+	"github.com/ngicks/oci-image-copy/ocidir/vrootdir"
 )
 
-type mapDir map[string][]byte
-
-type bytesReader struct{ *bytes.Reader }
-
-func (bytesReader) Close() error { return nil }
-
-func (d mapDir) open(name string) ([]byte, error) {
-	b, ok := d[name]
-	if !ok {
-		return nil, fmt.Errorf("%s: %w", name, fs.ErrNotExist)
+func newDir(t *testing.T, files map[string][]byte) ocidir.OciDir {
+	t.Helper()
+	fsys := memfs.New("fixture")
+	if err := ocidirtest.Write(fsys, files); err != nil {
+		t.Fatal(err)
 	}
-	return b, nil
-}
-
-func (d mapDir) Blobs(ctx context.Context, dgst digest.Digest) (ocidir.ReadAtCloser, error) {
-	b, err := d.open(ocidirtest.BlobPath(dgst))
-	if err != nil {
-		return nil, err
-	}
-	return bytesReader{bytes.NewReader(b)}, nil
-}
-
-func (d mapDir) Index(ctx context.Context) (ocispec.Index, error) {
-	var idx ocispec.Index
-	b, err := d.IndexBin(ctx)
-	if err != nil {
-		return idx, err
-	}
-	return idx, json.Unmarshal(b, &idx)
-}
-
-func (d mapDir) OciLayout(ctx context.Context) (ocispec.ImageLayout, error) {
-	var l ocispec.ImageLayout
-	b, err := d.OciLayoutBin(ctx)
-	if err != nil {
-		return l, err
-	}
-	return l, json.Unmarshal(b, &l)
-}
-
-func (d mapDir) IndexBin(ctx context.Context) ([]byte, error) {
-	return d.open(ocispec.ImageIndexFile)
-}
-
-func (d mapDir) OciLayoutBin(ctx context.Context) ([]byte, error) {
-	return d.open(ocispec.ImageLayoutFile)
+	return vrootdir.New(fsys)
 }
 
 func blobsOf(img ocidirtest.Image) []digest.Digest {
@@ -113,7 +73,7 @@ func collect(
 
 func TestAllImages(t *testing.T) {
 	f := ocidirtest.New()
-	seq, err := ocidir.AllImages(t.Context(), mapDir(f.Files))
+	seq, err := ocidir.AllImages(t.Context(), newDir(t, f.Files))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +115,7 @@ func TestAllBlobsFromNames(t *testing.T) {
 		{"everything", nil, dedup(blobsOf(f.Single), multi, blobsOf(f.Unnamed))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			seq, err := ocidir.AllBlobsFromNames(t.Context(), mapDir(f.Files), tc.names...)
+			seq, err := ocidir.AllBlobsFromNames(t.Context(), newDir(t, f.Files), tc.names...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,7 +143,7 @@ func TestAllBlobsFromDigests(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			seq, err := ocidir.AllBlobsFromDigests(t.Context(), mapDir(f.Files), tc.digests...)
+			seq, err := ocidir.AllBlobsFromDigests(t.Context(), newDir(t, f.Files), tc.digests...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +156,7 @@ func TestAllBlobsFromDigests(t *testing.T) {
 
 func TestAllBlobs_unknown(t *testing.T) {
 	f := ocidirtest.New()
-	dir := mapDir(f.Files)
+	dir := newDir(t, f.Files)
 
 	if _, err := ocidir.AllBlobsFromNames(
 		t.Context(),
@@ -225,7 +185,7 @@ func TestAllBlobs_missingBlob(t *testing.T) {
 	f := ocidirtest.New()
 	delete(f.Files, ocidirtest.BlobPath(f.Single.Layers[1].Digest))
 
-	seq, err := ocidir.AllBlobsFromNames(t.Context(), mapDir(f.Files), ocidirtest.SingleName)
+	seq, err := ocidir.AllBlobsFromNames(t.Context(), newDir(t, f.Files), ocidirtest.SingleName)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -78,6 +78,7 @@ character limit in the scope rules applies to comma-joined scopes.
 | scope     | covers                                                     |
 | :-------- | :--------------------------------------------------------- |
 | `doc`     | `doc/`, including this document                            |
+| `ocidir`   | `ocidir/` and its backends, `internal/ocidirtest/`         |
 | `testdata` | `prep_testdata.go` and `internal/testdata/`               |
 
 Guidelines for rows:

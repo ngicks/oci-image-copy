@@ -11,8 +11,8 @@ import (
 	"github.com/ngicks/go-fsys-helper/vroot/osfs"
 
 	"github.com/ngicks/oci-image-copy/internal/ocidirtest"
+	"github.com/ngicks/oci-image-copy/ocidir/fsdir"
 	"github.com/ngicks/oci-image-copy/ocidir/httpdir"
-	"github.com/ngicks/oci-image-copy/ocidir/vrootdir"
 )
 
 func serve(t *testing.T, dir string) *httptest.Server {
@@ -37,7 +37,7 @@ func TestDir(t *testing.T) {
 
 	dir := httpdir.New(httpdir.BaseURL(srv.URL+"/"), nil)
 	ocidirtest.TestOciDir(t, dir, f)
-	ocidirtest.TestSameAs(t, vrootdir.New(root), dir)
+	ocidirtest.TestSameAs(t, fsdir.New(root), dir)
 
 	missing := httpdir.New(httpdir.BaseURL(srv.URL+"/nowhere"), nil)
 	if _, err := missing.IndexBin(t.Context()); !errors.Is(err, fs.ErrNotExist) {
@@ -54,5 +54,5 @@ func TestUbuntu_Local(t *testing.T) {
 	t.Cleanup(func() { _ = root.Close() })
 	srv := serve(t, ubuntu)
 
-	ocidirtest.TestSameAs(t, vrootdir.New(root), httpdir.New(httpdir.BaseURL(srv.URL), nil))
+	ocidirtest.TestSameAs(t, fsdir.New(root), httpdir.New(httpdir.BaseURL(srv.URL), nil))
 }

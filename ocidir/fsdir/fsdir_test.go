@@ -1,4 +1,4 @@
-package vrootdir_test
+package fsdir_test
 
 import (
 	"testing"
@@ -8,7 +8,7 @@ import (
 
 	"github.com/ngicks/oci-image-copy/internal/ocidirtest"
 	"github.com/ngicks/oci-image-copy/ocidir"
-	"github.com/ngicks/oci-image-copy/ocidir/vrootdir"
+	"github.com/ngicks/oci-image-copy/ocidir/fsdir"
 )
 
 func TestDir(t *testing.T) {
@@ -17,7 +17,7 @@ func TestDir(t *testing.T) {
 	if err := ocidirtest.Write(fsys, f.Files); err != nil {
 		t.Fatal(err)
 	}
-	ocidirtest.TestOciDir(t, vrootdir.New(fsys), f)
+	ocidirtest.TestOciDir(t, fsdir.New(fsys), f)
 }
 
 func TestUbuntu_Local(t *testing.T) {
@@ -26,7 +26,7 @@ func TestUbuntu_Local(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = root.Close() })
-	dir := vrootdir.New(root)
+	dir := fsdir.New(root)
 
 	seq, err := ocidir.AllImages(t.Context(), dir)
 	if err != nil {

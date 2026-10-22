@@ -21,8 +21,8 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/ngicks/oci-image-copy/internal/ocidirtest"
+	"github.com/ngicks/oci-image-copy/ocidir/fsdir"
 	"github.com/ngicks/oci-image-copy/ocidir/s3dir"
-	"github.com/ngicks/oci-image-copy/ocidir/vrootdir"
 )
 
 const (
@@ -170,7 +170,7 @@ func TestDir_Local(t *testing.T) {
 	if err := ocidirtest.Write(fsys, f.Files); err != nil {
 		t.Fatal(err)
 	}
-	want := vrootdir.New(fsys)
+	want := fsdir.New(fsys)
 
 	for _, tc := range []struct {
 		name  string
@@ -204,5 +204,5 @@ func TestUbuntu_Local(t *testing.T) {
 
 	namer := s3dir.Flat("ubuntu", "")
 	upload(t, client, namer, readTree(t, ubuntu))
-	ocidirtest.TestSameAs(t, vrootdir.New(root), s3dir.New(client, namer))
+	ocidirtest.TestSameAs(t, fsdir.New(root), s3dir.New(client, namer))
 }

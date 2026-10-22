@@ -15,7 +15,7 @@ import (
 
 	"github.com/ngicks/oci-image-copy/internal/ocidirtest"
 	"github.com/ngicks/oci-image-copy/ocidir"
-	"github.com/ngicks/oci-image-copy/ocidir/vrootdir"
+	"github.com/ngicks/oci-image-copy/ocidir/fsdir"
 )
 
 func newDir(t *testing.T, files map[string][]byte) ocidir.OciDir {
@@ -24,7 +24,7 @@ func newDir(t *testing.T, files map[string][]byte) ocidir.OciDir {
 	if err := ocidirtest.Write(fsys, files); err != nil {
 		t.Fatal(err)
 	}
-	return vrootdir.New(fsys)
+	return fsdir.New(fsys)
 }
 
 func blobsOf(img ocidirtest.Image) []digest.Digest {

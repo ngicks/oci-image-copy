@@ -1,5 +1,5 @@
-// Package vrootdir implements [ocidir.OciDir] over a [vroot.Fs] whose root is the oci-dir.
-package vrootdir
+// Package fsdir implements [ocidir.OciDir] over a [vroot.Fs] whose root is the oci-dir.
+package fsdir
 
 import (
 	"context"

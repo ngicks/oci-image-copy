@@ -90,6 +90,8 @@ func TestAllImages(t *testing.T) {
 		{ocidirtest.SingleName, f.Single.Image},
 		{ocidirtest.MultiName, f.MultiAmd64.Image},
 		{ocidirtest.MultiName, f.MultiArm64.Image},
+		{ocidirtest.DockerName, f.Docker.Image},
+		{ocidirtest.DockerListName, f.DockerAmd64.Image},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("not equal:\ngot  = %#v\nwant = %#v", got, want)
@@ -99,6 +101,7 @@ func TestAllImages(t *testing.T) {
 func TestAllBlobsFromNames(t *testing.T) {
 	f := ocidirtest.New()
 	multi := dedup(blobsOf(f.MultiAmd64), blobsOf(f.MultiArm64), []digest.Digest{f.Multi.Digest})
+	dockerList := dedup(blobsOf(f.DockerAmd64), []digest.Digest{f.DockerList.Digest})
 
 	for _, tc := range []struct {
 		name  string
@@ -107,12 +110,18 @@ func TestAllBlobsFromNames(t *testing.T) {
 	}{
 		{"single", []string{ocidirtest.SingleName}, blobsOf(f.Single)},
 		{"multi", []string{ocidirtest.MultiName}, multi},
+		{"docker", []string{ocidirtest.DockerName}, blobsOf(f.Docker)},
+		{"docker list", []string{ocidirtest.DockerListName}, dockerList},
 		{
 			"both",
 			[]string{ocidirtest.SingleName, ocidirtest.MultiName},
 			dedup(blobsOf(f.Single), multi),
 		},
-		{"everything", nil, dedup(blobsOf(f.Single), multi, blobsOf(f.Unnamed))},
+		{
+			"everything",
+			nil,
+			dedup(blobsOf(f.Single), multi, blobsOf(f.Unnamed), blobsOf(f.Docker), dockerList),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seq, err := ocidir.AllBlobsFromNames(t.Context(), newDir(t, f.Files), tc.names...)
@@ -136,6 +145,7 @@ func TestAllBlobsFromDigests(t *testing.T) {
 	}{
 		{"index child", []digest.Digest{f.MultiArm64.Manifest.Digest}, blobsOf(f.MultiArm64)},
 		{"unnamed", []digest.Digest{f.Unnamed.Manifest.Digest}, blobsOf(f.Unnamed)},
+		{"docker list child", []digest.Digest{f.DockerAmd64.Manifest.Digest}, blobsOf(f.DockerAmd64)},
 		{
 			"index and child",
 			[]digest.Digest{f.Multi.Digest, f.MultiAmd64.Manifest.Digest},

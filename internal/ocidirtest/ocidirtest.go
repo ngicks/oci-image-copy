@@ -10,8 +10,37 @@ import (
 )
 
 const (
-	SingleName = "example.com/single:1"
-	MultiName  = "example.com/multi:1"
+	SingleName     = "example.com/single:1"
+	MultiName      = "example.com/multi:1"
+	DockerName     = "example.com/docker:1"
+	DockerListName = "example.com/docker-list:1"
+)
+
+// Docker media types, as kept by `skopeo copy --preserve-digests docker://... oci:...`.
+const (
+	MediaTypeDockerManifestList = "application/vnd.docker.distribution.manifest.list.v2+json"
+	MediaTypeDockerManifest     = "application/vnd.docker.distribution.manifest.v2+json"
+	MediaTypeDockerConfig       = "application/vnd.docker.container.image.v1+json"
+	MediaTypeDockerLayerGzip    = "application/vnd.docker.image.rootfs.diff.tar.gzip"
+)
+
+type mediaTypes struct {
+	index, manifest, config, layer string
+}
+
+var (
+	ociTypes = mediaTypes{
+		ocispec.MediaTypeImageIndex,
+		ocispec.MediaTypeImageManifest,
+		ocispec.MediaTypeImageConfig,
+		ocispec.MediaTypeImageLayer,
+	}
+	dockerTypes = mediaTypes{
+		MediaTypeDockerManifestList,
+		MediaTypeDockerManifest,
+		MediaTypeDockerConfig,
+		MediaTypeDockerLayerGzip,
+	}
 )
 
 // Image is one platform manifest with its blobs.
@@ -26,6 +55,8 @@ type Image struct {
 //   - Single: a manifest named [SingleName]
 //   - Multi: an image index named [MultiName] with two platform manifests sharing SharedLayer
 //   - Unnamed: a manifest without the ref name annotation
+//   - Docker: a Docker v2 manifest named [DockerName]
+//   - DockerList: a Docker manifest list named [DockerListName] with one manifest
 type Fixture struct {
 	// Files maps oci-dir relative paths, e.g. "blobs/sha256/<hex>", to their contents.
 	Files       map[string][]byte
@@ -35,6 +66,9 @@ type Fixture struct {
 	MultiAmd64  Image
 	MultiArm64  Image
 	Unnamed     Image
+	Docker      Image
+	DockerList  ocispec.Descriptor
+	DockerAmd64 Image
 }
 
 func BlobPath(dgst digest.Digest) string {
@@ -56,7 +90,7 @@ func New() Fixture {
 		}
 		return put(mediaType, b)
 	}
-	image := func(arch string, layers ...ocispec.Descriptor) Image {
+	image := func(mt mediaTypes, arch string, layers ...ocispec.Descriptor) Image {
 		img := ocispec.Image{
 			OS: "linux", Architecture: arch,
 			RootFS: ocispec.RootFS{Type: "layers"},
@@ -64,30 +98,37 @@ func New() Fixture {
 		for _, l := range layers {
 			img.RootFS.DiffIDs = append(img.RootFS.DiffIDs, l.Digest)
 		}
-		config := putJSON(ocispec.MediaTypeImageConfig, img)
-		manifest := putJSON(ocispec.MediaTypeImageManifest, ocispec.Manifest{
+		config := putJSON(mt.config, img)
+		// A Docker v2 manifest has the same JSON shape as an OCI manifest.
+		manifest := putJSON(mt.manifest, ocispec.Manifest{
 			SchemaVersion: 2,
-			MediaType:     ocispec.MediaTypeImageManifest,
+			MediaType:     mt.manifest,
 			Config:        config,
 			Layers:        layers,
 		})
 		manifest.Platform = &img.Platform
 		return Image{Manifest: manifest, Config: config, Layers: layers, Image: img}
 	}
-	layer := func(content string) ocispec.Descriptor {
-		return put(ocispec.MediaTypeImageLayer, []byte(content))
+	layer := func(mt mediaTypes, content string) ocispec.Descriptor {
+		return put(mt.layer, []byte(content))
+	}
+	index := func(mt mediaTypes, manifests ...ocispec.Descriptor) ocispec.Descriptor {
+		return putJSON(mt.index, ocispec.Index{
+			SchemaVersion: 2,
+			MediaType:     mt.index,
+			Manifests:     manifests,
+		})
 	}
 
-	f.SharedLayer = layer("shared")
-	f.Single = image("amd64", f.SharedLayer, layer("single"))
-	f.MultiAmd64 = image("amd64", f.SharedLayer, layer("multi-amd64"))
-	f.MultiArm64 = image("arm64", f.SharedLayer, layer("multi-arm64"))
-	f.Multi = putJSON(ocispec.MediaTypeImageIndex, ocispec.Index{
-		SchemaVersion: 2,
-		MediaType:     ocispec.MediaTypeImageIndex,
-		Manifests:     []ocispec.Descriptor{f.MultiAmd64.Manifest, f.MultiArm64.Manifest},
-	})
-	f.Unnamed = image("riscv64", layer("unnamed"))
+	f.SharedLayer = layer(ociTypes, "shared")
+	f.Single = image(ociTypes, "amd64", f.SharedLayer, layer(ociTypes, "single"))
+	f.MultiAmd64 = image(ociTypes, "amd64", f.SharedLayer, layer(ociTypes, "multi-amd64"))
+	f.MultiArm64 = image(ociTypes, "arm64", f.SharedLayer, layer(ociTypes, "multi-arm64"))
+	f.Multi = index(ociTypes, f.MultiAmd64.Manifest, f.MultiArm64.Manifest)
+	f.Unnamed = image(ociTypes, "riscv64", layer(ociTypes, "unnamed"))
+	f.Docker = image(dockerTypes, "amd64", layer(dockerTypes, "docker"))
+	f.DockerAmd64 = image(dockerTypes, "amd64", layer(dockerTypes, "docker-list-amd64"))
+	f.DockerList = index(dockerTypes, f.DockerAmd64.Manifest)
 
 	named := func(d ocispec.Descriptor, name string) ocispec.Descriptor {
 		d.Platform = nil
@@ -96,19 +137,21 @@ func New() Fixture {
 	}
 	unnamed := f.Unnamed.Manifest
 	unnamed.Platform = nil
-	index, err := json.Marshal(ocispec.Index{
+	indexJSON, err := json.Marshal(ocispec.Index{
 		SchemaVersion: 2,
 		MediaType:     ocispec.MediaTypeImageIndex,
 		Manifests: []ocispec.Descriptor{
 			named(f.Single.Manifest, SingleName),
 			named(f.Multi, MultiName),
 			unnamed,
+			named(f.Docker.Manifest, DockerName),
+			named(f.DockerList, DockerListName),
 		},
 	})
 	if err != nil {
 		panic(err)
 	}
-	f.Files[ocispec.ImageIndexFile] = index
+	f.Files[ocispec.ImageIndexFile] = indexJSON
 	layout, err := json.Marshal(ocispec.ImageLayout{Version: ocispec.ImageLayoutVersion})
 	if err != nil {
 		panic(err)

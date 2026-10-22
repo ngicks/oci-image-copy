@@ -84,7 +84,7 @@ func TestOciDir(t *testing.T, dir ocidir.OciDir, f Fixture) {
 		t.Errorf("IndexBin = %q, %v", indexBin, err)
 	}
 	idx, err := dir.Index(ctx)
-	if err != nil || len(idx.Manifests) != 3 {
+	if err != nil || len(idx.Manifests) != 5 {
 		t.Errorf("Index = %#v, %v", idx, err)
 	}
 

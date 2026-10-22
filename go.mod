@@ -3,6 +3,7 @@ module github.com/ngicks/oci-image-copy
 go 1.27.0
 
 require (
+	github.com/ngicks/go-fsys-helper/stream v0.2.2-0.20260820002924-4f04f83b610e
 	github.com/ngicks/go-fsys-helper/vroot v0.0.2-0.20260820002924-4f04f83b610e
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1

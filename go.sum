@@ -1,5 +1,7 @@
 github.com/ngicks/go-fsys-helper/fsutil v0.0.0-20260816154526-c6c8f4c0c36f h1:4dK//MGxbGF9WYm1vx3cTcLST9+78i87qIjudSW3XjE=
 github.com/ngicks/go-fsys-helper/fsutil v0.0.0-20260816154526-c6c8f4c0c36f/go.mod h1:3Ko4N72NP33xyl3yIEj3JzbOAA8Ko/ZxgmbAl7uZhf4=
+github.com/ngicks/go-fsys-helper/stream v0.2.2-0.20260820002924-4f04f83b610e h1:+DQ2SyO7plJ/VDhXh90hcAh4E13NAGv9FcA0gGRD6lY=
+github.com/ngicks/go-fsys-helper/stream v0.2.2-0.20260820002924-4f04f83b610e/go.mod h1:69GCg4bWju6cWl47cte1gyeMwrrO5iFc6PupO1jCzu4=
 github.com/ngicks/go-fsys-helper/vroot v0.0.2-0.20260820002924-4f04f83b610e h1:H8L853cXua12QE3gjXWbDQjV+8YsLDBV7LAyWCIqWBU=
 github.com/ngicks/go-fsys-helper/vroot v0.0.2-0.20260820002924-4f04f83b610e/go.mod h1:OoQS0gOug8ZAEPPNeMLvxDCn/S7tQhvWzgQvtZw2bXE=
 github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8Oi/yOhh5U=

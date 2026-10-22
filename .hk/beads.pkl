@@ -1,0 +1,86 @@
+// hk hooks for a repository whose plan lives in beads.
+//
+// Installed by `scripts/hk-init.sh`, which copies this file to
+// `.hk/beads.pkl` at the worktree root, makes `hk.pkl` amend it, and runs
+// `hk install`. The script also rewrites the version below to match the
+// project's hk pin, so do not edit the copy by hand: rerun the script.
+// Add project steps in `hk.pkl`, never here.
+amends "package://github.com/jdx/hk/releases/download/v2.7.0/hk@2.7.0#/Config.pkl"
+
+// Stamp `Executed-By: <agent>` on commits made by a coding agent (claude,
+// codex, opencode). Nothing is stamped for a human at a plain shell.
+// Detection: nearest agent in the process ancestry wins; otherwise the
+// CODEX_THREAD_ID / OPENCODE / CLAUDECODE environment variables, in that order.
+local executedByTrailer = #"""
+  msg_file="{{commit_msg_file}}"
+  source="{{source}}"
+  case "$source" in merge|squash) exit 0 ;; esac
+
+  classify() {
+    case "$1" in
+      claude|claude-code) echo claude ;;
+      codex) echo codex ;;
+      opencode) echo opencode ;;
+      *) return 1 ;;
+    esac
+  }
+  parent_of() {
+    if [ -r "/proc/$1/stat" ]; then awk '{print $4}' "/proc/$1/stat"
+    else ps -o ppid= -p "$1" 2>/dev/null | tr -d ' '; fi
+  }
+  comm_of() {
+    if [ -r "/proc/$1/comm" ]; then cat "/proc/$1/comm"
+    else ps -o comm= -p "$1" 2>/dev/null | sed 's#.*/##'; fi
+  }
+  detect_by_ancestry() {
+    pid=$$
+    while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
+      name=$(comm_of "$pid" 2>/dev/null || true)
+      if agent=$(classify "$name"); then echo "$agent"; return 0; fi
+      pid=$(parent_of "$pid" 2>/dev/null || true)
+    done
+    return 1
+  }
+  detect_by_env() {
+    if [ -n "${CODEX_THREAD_ID:-}" ]; then echo codex
+    elif [ -n "${OPENCODE:-}" ]; then echo opencode
+    elif [ -n "${CLAUDECODE:-}" ]; then echo claude
+    else return 1; fi
+  }
+
+  agent=$(detect_by_ancestry || detect_by_env || true)
+  [ -n "$agent" ] || exit 0
+  git interpret-trailers --in-place --if-exists addIfDifferent \
+    --trailer "Executed-By: $agent" "$msg_file"
+  """#
+
+hooks {
+  ["prepare-commit-msg"] {
+    steps {
+      ["executed-by"] {
+        shell = "sh -o errexit -o nounset -c"
+        check = executedByTrailer
+      }
+    }
+  }
+
+  ["pre-push"] {
+    steps {
+      ["beads-push"] {
+        check = "bd dolt push -q"
+        exclusive = true
+        allow_failure = true
+      }
+    }
+  }
+
+  ["post-merge"] {
+    steps {
+      ["beads-pull"] {
+        check = "bd dolt pull -q"
+        exclusive = true
+        allow_failure = true
+      }
+    }
+  }
+}

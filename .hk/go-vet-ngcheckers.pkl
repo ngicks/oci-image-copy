@@ -1,0 +1,18 @@
+// Pre-commit step vetting Go code with the ngcheckers analyzers.
+//
+// Installed by `scripts/hk-init.sh`, which copies this file to
+// `.hk/go-vet-ngcheckers.pkl` at the worktree root and rewrites the hk version
+// below to the project's pin, so do not edit the copy by hand: rerun the
+// script. `hk.pkl` spreads `steps` into its pre-commit hook.
+import "package://github.com/jdx/hk/releases/download/v2.7.0/hk@2.7.0#/Builtins.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.7.0/hk@2.7.0#/Config.pkl"
+
+steps: Mapping<String, Config.Step> = new {
+  // hk's go_vet with the vet tool swapped for ngcheckers. A missing
+  // ngcheckers fails the step by name instead of go vet's opaque error.
+  ["go-vet-ngcheckers"] = (Builtins.go_vet) {
+    check {
+      command = #"tool=$(command -v ngcheckers) || { echo "ngcheckers is not installed" >&2; exit 1; }; go vet -vettool="$tool" ./..."#
+    }
+  }
+}

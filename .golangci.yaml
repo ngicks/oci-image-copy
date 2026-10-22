@@ -24,11 +24,10 @@ linters:
       - (^|/)testdata(/|$)
   settings:
     govet:
-      # Mirror the gopls analyses turned on in
-      # ~/.config/nvim/after/lsp/gopls.lua. fieldalignment and shadow stay
-      # off (gopls also has them disabled). fillreturns / nonewvars /
-      # undeclaredname are gopls-only quickfix analyzers with no
-      # golangci-lint counterpart, so they are intentionally skipped.
+      # Mirror the gopls analyses enabled in the editor so golangci-lint
+      # surfaces the same diagnostics. fieldalignment and shadow stay off,
+      # as in gopls. fillreturns / nonewvars / undeclaredname are gopls-only
+      # quickfix analyzers with no golangci-lint counterpart.
       enable:
         - nilness
         - unreachable
@@ -36,10 +35,8 @@ linters:
         - unusedwrite
         - useany
     staticcheck:
-      # gopls runs staticcheck with all checks enabled except ST1003
-      # (see the analyses block in ~/.config/nvim/after/lsp/gopls.lua).
-      # Mirror that here so golangci-lint surfaces the same diagnostics
-      # nvim does.
+      # gopls runs staticcheck with all checks enabled except ST1003.
+      # Mirror that here so golangci-lint and the editor agree.
       checks:
         - all
         - -ST1003

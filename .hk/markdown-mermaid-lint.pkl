@@ -1,0 +1,16 @@
+// Pre-commit step linting mermaid diagrams in markdown files with mermaid-lint.
+//
+// Installed by `scripts/hk-init.sh`, which copies this file to
+// `.hk/markdown-mermaid-lint.pkl` at the worktree root and rewrites the hk
+// version below to the project's pin, so do not edit the copy by hand: rerun
+// the script. `hk.pkl` spreads `steps` into its pre-commit hook.
+import "package://github.com/jdx/hk/releases/download/v2.7.0/hk@2.7.0#/Config.pkl"
+
+steps: Mapping<String, Config.Step> = new {
+  // hk has no mermaid builtin.
+  ["mermaid-lint"] {
+    glob = List("**/*.md", "**/*.mdx", "**/*.markdown", "**/*.mmd")
+    check = "mermaid-lint {{files}}"
+    fix = "mermaid-lint --fix {{files}}"
+  }
+}

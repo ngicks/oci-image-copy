@@ -1,0 +1,17 @@
+amends ".hk/beads.pkl"
+
+// The imported .hk/*.pkl files are scaffolded by the hk-* skills and get
+// overwritten on rerun, so project wiring stays here.
+import ".hk/go-golangci-lint.pkl" as go_golangci_lint
+import ".hk/go-vet-ngcheckers.pkl" as go_vet_ngcheckers
+import ".hk/markdown-mermaid-lint.pkl" as markdown_mermaid_lint
+
+hooks {
+  ["pre-commit"] {
+    steps {
+      ...go_golangci_lint.steps
+      ...go_vet_ngcheckers.steps
+      ...markdown_mermaid_lint.steps
+    }
+  }
+}

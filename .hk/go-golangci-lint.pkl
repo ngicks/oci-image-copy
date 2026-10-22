@@ -1,0 +1,13 @@
+// Pre-commit steps formatting and linting Go code with golangci-lint.
+//
+// Installed by `scripts/hk-init.sh`, which copies this file to
+// `.hk/go-golangci-lint.pkl` at the worktree root and rewrites the hk version
+// below to the project's pin, so do not edit the copy by hand: rerun the
+// script. `hk.pkl` spreads `steps` into its pre-commit hook.
+import "package://github.com/jdx/hk/releases/download/v2.7.0/hk@2.7.0#/Builtins.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.7.0/hk@2.7.0#/Config.pkl"
+
+steps: Mapping<String, Config.Step> = new {
+  ["golangci-lint-fmt"] = Builtins.golangci_lint_fmt
+  ["golangci-lint"] = Builtins.golangci_lint
+}

@@ -78,13 +78,19 @@ func (ps *pushSource) Resolve(
 		if err != nil {
 			return store.Image{}, err
 		}
+		asIs = asIs && ok && desc.Digest == m.Layers[i].Digest
+		if !ok {
+			desc, ok, err = ps.byDiffID(ctx, l.UncompressedDigest)
+			if err != nil {
+				return store.Image{}, err
+			}
+		}
 		if !ok {
 			desc, err = ps.s.exportZstd(ctx, l)
 			if err != nil {
 				return store.Image{}, err
 			}
 		}
-		asIs = asIs && ok && desc.Digest == m.Layers[i].Digest
 		layers[i] = desc
 	}
 
@@ -304,6 +310,50 @@ func indexChild(b []byte, p types.Platform) (digest.Digest, bool) {
 		if d.Platform != nil && p.Matches(*d.Platform) {
 			return d.Digest, true
 		}
+	}
+	return "", false
+}
+
+// byDiffID returns a blob dst already records for diffID, so no new compressed variant is created.
+// Its media type is read from the blob's magic number, because markers carry none.
+func (ps *pushSource) byDiffID(
+	ctx context.Context,
+	diffID digest.Digest,
+) (ocispec.Descriptor, bool, error) {
+	blobs, err := ps.dst.DiffIDBlobs(ctx, diffID)
+	if errors.Is(err, store.ErrNotListable) {
+		return ocispec.Descriptor{}, false, nil
+	}
+	if err != nil {
+		return ocispec.Descriptor{}, false, err
+	}
+	for _, b := range blobs {
+		r, err := ps.dst.Blob(ctx, b)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return ocispec.Descriptor{}, false, err
+		}
+		var magic [4]byte
+		n, _ := r.ReadAt(magic[:], 0)
+		size := r.Size()
+		_ = r.Close()
+		mediaType, ok := layerMediaType(magic[:n])
+		if !ok {
+			continue
+		}
+		return ocispec.Descriptor{MediaType: mediaType, Digest: b, Size: size}, true, nil
+	}
+	return ocispec.Descriptor{}, false, nil
+}
+
+func layerMediaType(magic []byte) (string, bool) {
+	switch {
+	case bytes.HasPrefix(magic, []byte{0x1f, 0x8b}):
+		return ocispec.MediaTypeImageLayerGzip, true
+	case bytes.HasPrefix(magic, []byte{0x28, 0xb5, 0x2f, 0xfd}):
+		return ocispec.MediaTypeImageLayerZstd, true
 	}
 	return "", false
 }

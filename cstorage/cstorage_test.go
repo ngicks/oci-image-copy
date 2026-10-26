@@ -485,6 +485,46 @@ func TestPush(t *testing.T) {
 		}
 	})
 
+	t.Run("lost blobs reuse a stored variant by diffID", func(t *testing.T) {
+		tars := [][]byte{tarLayer(t, baseFiles[0]), tarLayer(t, baseFiles[1])}
+		alt := build(t, "example.com/base-alt:1", tars, "alt-compressor")
+		dst := storeWith(t, alt) // holds the base diffIDs under other gzip blobs
+
+		st := newVFS(t)
+		copyIn(t, st, base) // original blobs unreachable
+		cs := cstorage.New(st, newCache(t), nil)
+		set := types.ImageSetManifest{Images: []string{base.ref.String()}}
+		plan, err := transfer.PlanPush(ctx, cs.PushSource(dst), dst, set, []types.Platform{amd64})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range plan.Entries[0].Missing {
+			if d.MediaType == ocispec.MediaTypeImageLayerGzip ||
+				d.MediaType == ocispec.MediaTypeImageLayerZstd {
+				t.Errorf("layer %s (%s) would be uploaded", d.Digest, d.MediaType)
+			}
+		}
+		if err := transfer.Push(ctx, plan, dst, nil); err != nil {
+			t.Fatal(err)
+		}
+		img, err := dst.Resolve(ctx, base.ref, amd64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := manifestOf(t, dst, img)
+		for i, l := range m.Layers {
+			if l.Digest != alt.layers[i].Digest || l.MediaType != ocispec.MediaTypeImageLayerGzip {
+				t.Errorf(
+					"layer %d = %s (%s), want the stored variant %s",
+					i,
+					l.Digest,
+					l.MediaType,
+					alt.layers[i].Digest,
+				)
+			}
+		}
+	})
+
 	t.Run("local layer compresses with zstd", func(t *testing.T) {
 		st := newVFS(t)
 		cs := cstorage.New(st, newCache(t), nil)

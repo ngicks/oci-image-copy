@@ -74,9 +74,12 @@ func (d *Dir) Blobs(ctx context.Context, dgst digest.Digest) (ocidir.ReadAtClose
 	if err := dgst.Validate(); err != nil {
 		return nil, err
 	}
-	name := "blob " + dgst.String()
 	bucket, key := d.namer.Blob(dgst)
-	out, err := d.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &bucket, Key: &key})
+	return openObject(ctx, d.client, "blob "+dgst.String(), bucket, key)
+}
+
+func openObject(ctx context.Context, client Client, name, bucket, key string) (*reader, error) {
+	out, err := client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &bucket, Key: &key})
 	if err != nil {
 		return nil, wrapErr(name, err)
 	}
@@ -85,7 +88,7 @@ func (d *Dir) Blobs(ctx context.Context, dgst digest.Digest) (ocidir.ReadAtClose
 	}
 	return &reader{
 		ctx:    ctx,
-		client: d.client,
+		client: client,
 		name:   name,
 		bucket: bucket,
 		key:    key,

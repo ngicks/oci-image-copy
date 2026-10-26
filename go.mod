@@ -9,6 +9,7 @@ require (
 	github.com/ngicks/go-fsys-helper/vroot v0.0.2-0.20260820002924-4f04f83b610e
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
+	go.podman.io/image/v5 v5.42.0
 )
 
 require (
@@ -22,5 +23,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.6 // indirect
 	github.com/aws/smithy-go v1.28.5 // indirect
 	github.com/ngicks/go-fsys-helper/fsutil v0.0.0-20260816154526-c6c8f4c0c36f // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	go.podman.io/storage v1.65.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 )

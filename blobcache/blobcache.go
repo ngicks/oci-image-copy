@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"sync"
@@ -36,8 +37,8 @@ const (
 	bufSize    = 1 << 20
 )
 
-// Cache is meant for one process at a time; concurrent fetches of one digest within a process are
-// serialized.
+// Cache may be shared by several processes: fetches of one digest are serialized by an in-process
+// mutex and, across processes, by an exclusive lock on the partial file (on unix).
 type Cache struct {
 	root  *os.Root
 	locks sync.Map // digest.Digest -> *sync.Mutex
@@ -151,15 +152,21 @@ func (c *Cache) fetch(
 	if err := c.root.MkdirAll(path.Dir(name), 0o755); err != nil {
 		return false, err
 	}
-	f, err := c.root.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o644)
+	f, err := c.openLocked(name)
 	if err != nil {
 		return false, err
 	}
-	defer func() {
-		if f != nil {
-			_ = f.Close()
+	// Closing releases the lock, so every path below finishes with the partial file
+	// (committed or removed) before this runs.
+	defer func() { _ = f.Close() }()
+
+	if c.Has(desc.Digest) {
+		// Another process completed the blob while this one waited for the lock.
+		if progress != nil {
+			progress(desc.Size)
 		}
-	}()
+		return false, nil
+	}
 
 	info, err := f.Stat()
 	if err != nil {
@@ -216,20 +223,41 @@ func (c *Cache) fetch(
 	}
 
 	if got := digester.Digest(); got != desc.Digest {
-		_ = f.Close()
-		f = nil
 		c.discard(name)
 		return resumed, fmt.Errorf("blobcache: %s: %w: got %s", desc.Digest, ErrMismatch, got)
 	}
 	if err := f.Sync(); err != nil {
 		return resumed, err
 	}
-	if err := f.Close(); err != nil {
-		f = nil
-		return resumed, err
-	}
-	f = nil
 	return resumed, c.commit(name, desc.Digest)
+}
+
+// openLocked opens the partial file name and locks it exclusively against other processes.
+// A waiter may wake up holding a file that the previous holder has since renamed or removed;
+// it then reopens, so the locked file is always the one at name.
+func (c *Cache) openLocked(name string) (*os.File, error) {
+	for {
+		f, err := c.root.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		if err := lockFile(f); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		held, herr := f.Stat()
+		current, cerr := c.root.Stat(name)
+		if herr == nil && cerr == nil && os.SameFile(held, current) {
+			return f, nil
+		}
+		_ = f.Close()
+		if herr != nil {
+			return nil, herr
+		}
+		if cerr != nil && !errors.Is(cerr, fs.ErrNotExist) {
+			return nil, cerr
+		}
+	}
 }
 
 func (c *Cache) discard(name string) {

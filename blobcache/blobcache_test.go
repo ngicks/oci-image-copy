@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -212,6 +213,64 @@ func TestPut(t *testing.T) {
 		}
 	}
 	if !bytes.Equal(readCached(t, c, want.Digest), data) {
+		t.Error("cached content differs")
+	}
+}
+
+// slowSource delays every read so a second fetcher arrives while the first holds the partial file.
+type slowSource struct {
+	source
+	delay time.Duration
+}
+
+func (s *slowSource) ReadAt(p []byte, off int64) (int, error) {
+	time.Sleep(s.delay)
+	return s.source.ReadAt(p, off)
+}
+
+// TestFetch_sharedDir uses two Cache values on one directory as two processes would:
+// they share no mutex, only the lock on the partial file.
+func TestFetch_sharedDir(t *testing.T) {
+	_, dir := newCache(t)
+	first, err := blobcache.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := blobcache.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	data, desc := blob(4 << 20)
+
+	firstErr := make(chan error, 1)
+	go func() {
+		slow := &slowSource{source{data: data, failAt: -1}, 30 * time.Millisecond}
+		firstErr <- first.Fetch(t.Context(), desc, slow, nil)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if info, err := os.Stat(partialPath(dir, desc.Digest)); err == nil && info.Size() > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first fetch never started writing")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	src := &source{data: data, failAt: -1}
+	if err := second.Fetch(t.Context(), desc, src, nil); err != nil {
+		t.Errorf("second fetch: %v", err)
+	}
+	if err := <-firstErr; err != nil {
+		t.Errorf("first fetch: %v", err)
+	}
+	if len(src.offs) != 0 {
+		t.Errorf("second fetch read its source at %v instead of waiting for the first", src.offs)
+	}
+	if !bytes.Equal(readCached(t, second, desc.Digest), data) {
 		t.Error("cached content differs")
 	}
 }

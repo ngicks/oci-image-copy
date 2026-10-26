@@ -80,6 +80,12 @@ character limit in the scope rules applies to comma-joined scopes.
 | `doc`     | `doc/`, including this document                            |
 | `ocidir`   | `ocidir/` and its backends, `internal/ocidirtest/`         |
 | `testdata` | `prep_testdata.go` and `internal/testdata/`               |
+| `types`    | `types/`                                                   |
+| `store`    | `store/`                                                   |
+| `blobcache` | `blobcache/`                                              |
+| `transfer` | `transfer/`                                                |
+| `registry` | `registry/`                                                |
+| `cstorage` | `cstorage/`                                                |
 
 Guidelines for rows:
 

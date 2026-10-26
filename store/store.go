@@ -173,10 +173,14 @@ func isForeign(mediaType string) bool {
 // Commit writes the leaf for ref and p pointing at manifest.
 //
 // It checks that the manifest, its config and every layer are stored, refuses non-distributable
-// layers,
-// and refuses a config whose platform does not match p.
+// layers, and refuses a config whose platform does not match p.
 // Committing an existing leaf with the same manifest is a no-op; a different manifest returns
 // ErrConflict.
+//
+// For a ref pinned to an image index, Commit cannot check that the index lists manifest, because
+// the
+// store never holds indexes; the caller vouches for it (transfer.FromOciDir and registry.Source
+// verify the index before resolving to its child).
 func (s *Store) Commit(
 	ctx context.Context,
 	ref types.Reference,

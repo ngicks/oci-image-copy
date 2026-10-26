@@ -3,6 +3,7 @@
 //	shared/blobs/<alg>/<hex>
 //	image_refs/<repo>/_tag/<tag>/<os>/<arch>[/<variant>]/{oci-layout,index.json[,blobs/]}
 //	image_refs/<repo>/_digest/<alg>/<hex>/<os>/<arch>[/<variant>]/{oci-layout,index.json[,blobs/]}
+//	diff_ids/<alg>/<diffid-hex>/<blob-alg>/<blob-hex>    {} marker: blob decompresses to diffID
 //
 // Each leaf is an OCI image layout whose index.json points at one image manifest,
 // and whose blobs live in shared/blobs.
@@ -65,9 +66,17 @@ type DirMaker interface {
 const (
 	sharedBlobsDir = "shared/blobs"
 	imageRefsDir   = "image_refs"
+	diffIDsDir     = "diff_ids"
 	tagMarker      = "_tag"
 	digestMarker   = "_digest"
 )
+
+// DiffIDPath is the marker for one (diffID, blob) pair: diff_ids/<alg>/<hex>/<blob-alg>/<blob-hex>.
+// Its content is an empty JSON object; its presence records that blob decompresses to diffID.
+func DiffIDPath(diffID, blob digest.Digest) string {
+	return path.Join(diffIDsDir, diffID.Algorithm().String(), diffID.Encoded(),
+		blob.Algorithm().String(), blob.Encoded())
+}
 
 func BlobPath(dgst digest.Digest) string {
 	return path.Join(sharedBlobsDir, dgst.Algorithm().String(), dgst.Encoded())
@@ -220,6 +229,20 @@ func (s *Store) Commit(
 				manifest.Digest,
 				fs.ErrNotExist,
 			)
+		}
+	}
+
+	if len(cfg.RootFS.DiffIDs) != len(m.Layers) {
+		return fmt.Errorf("store: config %s lists %d diffIDs for %d layers",
+			m.Config.Digest, len(cfg.RootFS.DiffIDs), len(m.Layers))
+	}
+	for i, l := range m.Layers {
+		if err := s.createOnce(
+			ctx,
+			DiffIDPath(cfg.RootFS.DiffIDs[i], l.Digest),
+			[]byte("{}"),
+		); err != nil {
+			return err
 		}
 	}
 
@@ -498,4 +521,56 @@ func (d *singleManifestDir) IndexBin(context.Context) ([]byte, error) {
 
 func (d *singleManifestDir) OciLayoutBin(context.Context) ([]byte, error) {
 	return layoutJSON(), nil
+}
+
+// HasDiffIDBlob reports whether blob is recorded as decompressing to diffID; it works on every
+// backend.
+func (s *Store) HasDiffIDBlob(ctx context.Context, diffID, blob digest.Digest) (bool, error) {
+	if err := diffID.Validate(); err != nil {
+		return false, err
+	}
+	if err := blob.Validate(); err != nil {
+		return false, err
+	}
+	r, err := s.b.Open(ctx, DiffIDPath(diffID, blob))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_ = r.Close()
+	return true, nil
+}
+
+// DiffIDBlobs lists the blobs recorded for diffID; it returns ErrNotListable on backends that
+// cannot list.
+func (s *Store) DiffIDBlobs(ctx context.Context, diffID digest.Digest) ([]digest.Digest, error) {
+	if err := diffID.Validate(); err != nil {
+		return nil, err
+	}
+	l, ok := s.b.(Lister)
+	if !ok {
+		return nil, ErrNotListable
+	}
+	prefix := path.Join(diffIDsDir, diffID.Algorithm().String(), diffID.Encoded()) + "/"
+	var out []digest.Digest
+	for name, err := range l.List(ctx, prefix) {
+		if err != nil {
+			return nil, err
+		}
+		rest, ok := strings.CutPrefix(name, prefix)
+		if !ok {
+			continue
+		}
+		alg, hex, ok := strings.Cut(rest, "/")
+		if !ok {
+			continue
+		}
+		d := digest.NewDigestFromEncoded(digest.Algorithm(alg), hex)
+		if d.Validate() == nil {
+			out = append(out, d)
+		}
+	}
+	return out, nil
 }

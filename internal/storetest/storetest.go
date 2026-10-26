@@ -192,6 +192,71 @@ func TestBackend(t *testing.T, newStore func(t *testing.T) *store.Store, listabl
 		}
 	})
 
+	t.Run("diffID markers", func(t *testing.T) {
+		s := newStore(t)
+		ctx := t.Context()
+		PutImage(t, s, f, f.Single)
+		if err := s.Commit(ctx, single, amd64, f.Single.Manifest); err != nil {
+			t.Fatal(err)
+		}
+		// The fixture's configs list each layer's own digest as its diffID.
+		for _, l := range f.Single.Layers {
+			if ok, err := s.HasDiffIDBlob(ctx, l.Digest, l.Digest); err != nil || !ok {
+				t.Errorf("marker for %s: %v, %v", l.Digest, ok, err)
+			}
+		}
+
+		// Another image stores the shared diffID under a different blob.
+		variant := []byte("shared, compressed differently")
+		vd := ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageLayerGzip,
+			Digest:    digest.FromBytes(variant),
+			Size:      int64(len(variant)),
+		}
+		cfgImg := f.Single.Image
+		cfgImg.RootFS.DiffIDs = []digest.Digest{f.SharedLayer.Digest}
+		cfg, _ := json.Marshal(cfgImg)
+		cd := ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageConfig,
+			Digest:    digest.FromBytes(cfg),
+			Size:      int64(len(cfg)),
+		}
+		m, _ := json.Marshal(ocispec.Manifest{
+			SchemaVersion: 2,
+			MediaType:     ocispec.MediaTypeImageManifest,
+			Config:        cd,
+			Layers:        []ocispec.Descriptor{vd},
+		})
+		md := ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageManifest,
+			Digest:    digest.FromBytes(m),
+			Size:      int64(len(m)),
+		}
+		PutBlob(t, s, variant, vd)
+		PutBlob(t, s, cfg, cd)
+		PutBlob(t, s, m, md)
+		if err := s.Commit(ctx, ref(t, "example.com/variant:1"), amd64, md); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := s.DiffIDBlobs(ctx, f.SharedLayer.Digest)
+		if !listable {
+			if !errors.Is(err, store.ErrNotListable) {
+				t.Errorf("DiffIDBlobs on a non-listable backend: want ErrNotListable, got %v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []digest.Digest{f.SharedLayer.Digest, vd.Digest}
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("DiffIDBlobs = %v, want %v", got, want)
+		}
+	})
+
 	t.Run("refusals", func(t *testing.T) {
 		s := newStore(t)
 		ctx := t.Context()

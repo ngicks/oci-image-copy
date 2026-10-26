@@ -82,6 +82,15 @@ func TestStore(t *testing.T) {
 		t.Errorf("Resolve(%s) from shared/blobs: %v", arm, err)
 	}
 
+	for _, l := range f.Single.Layers {
+		if ok, err := s.HasDiffIDBlob(ctx, l.Digest, l.Digest); err != nil || !ok {
+			t.Errorf("diffID marker for %s over HTTP: %v, %v", l.Digest, ok, err)
+		}
+	}
+	if _, err := s.DiffIDBlobs(ctx, f.SharedLayer.Digest); !errors.Is(err, store.ErrNotListable) {
+		t.Errorf("DiffIDBlobs over HTTP: want ErrNotListable, got %v", err)
+	}
+
 	missing, _ := types.ParseReference("example.com/missing:1")
 	if _, err := s.Resolve(ctx, missing, amd64); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("Resolve of a missing tag: want fs.ErrNotExist, got %v", err)

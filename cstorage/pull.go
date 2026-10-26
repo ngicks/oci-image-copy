@@ -241,6 +241,20 @@ func (s *Storage) applyLayer(id, parent string, l ocispec.Descriptor, diffID dig
 		OriginalSize:       &size,
 		UncompressedDigest: diffID,
 	}, io.NewSectionReader(r, 0, r.Size()))
+	if errors.Is(err, storage.ErrDuplicateID) {
+		// Another pull, ours or podman's, created this chain ID after the existence check.
+		// The ID is derived from the diffIDs, so the existing layer is reusable when its content
+		// agrees.
+		existing, lerr := s.store.Layer(id)
+		if lerr != nil {
+			return fmt.Errorf("applying layer %s: %w", l.Digest, errors.Join(err, lerr))
+		}
+		if existing.UncompressedDigest != diffID {
+			return fmt.Errorf("layer %s exists with diffID %s, config says %s: %w",
+				id, existing.UncompressedDigest, diffID, err)
+		}
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("applying layer %s: %w", l.Digest, err)
 	}

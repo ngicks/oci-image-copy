@@ -77,8 +77,16 @@ func (d *Dir) Blobs(ctx context.Context, dgst digest.Digest) (ocidir.ReadAtClose
 	if err := dgst.Validate(); err != nil {
 		return nil, err
 	}
-	name := "blob " + dgst.String()
-	r, err := httprange.New(ctx, d.namer.Blob(dgst), &d.cfg)
+	return openURL(ctx, "blob "+dgst.String(), d.namer.Blob(dgst), &d.cfg)
+}
+
+// openURL probes url so the reader knows its size; name labels errors instead of the URL.
+func openURL(
+	ctx context.Context,
+	name, url string,
+	cfg *httprange.Config,
+) (ocidir.ReadAtCloser, error) {
+	r, err := httprange.New(ctx, url, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("httpdir: %s: %w", name, err)
 	}

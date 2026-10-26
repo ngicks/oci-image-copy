@@ -1,4 +1,10 @@
 version: "2"
+run:
+  # cstorage imports go.podman.io/storage, whose btrfs driver needs C headers unless excluded,
+  # and its tests use copy.Image, which needs gpgme unless openpgp is selected.
+  build-tags:
+    - exclude_graphdriver_btrfs
+    - containers_image_openpgp
 linters:
   default: none
   enable:

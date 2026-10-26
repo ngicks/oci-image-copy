@@ -11,6 +11,14 @@ hooks {
     steps {
       ...go_golangci_lint.steps
       ...go_vet_ngcheckers.steps
+      // cstorage imports go.podman.io/storage, whose btrfs driver needs C headers unless excluded,
+      // and its tests use copy.Image, which needs gpgme unless openpgp is selected.
+      // golangci-lint reads the same tags from .golangci.yaml.
+      ["go-vet-ngcheckers"] = (go_vet_ngcheckers.steps["go-vet-ngcheckers"]) {
+        check {
+          command = #"tool=$(command -v ngcheckers) || { echo "ngcheckers is not installed" >&2; exit 1; }; go vet -tags 'exclude_graphdriver_btrfs containers_image_openpgp' -vettool="$tool" ./..."#
+        }
+      }
       ...markdown_mermaid_lint.steps
     }
   }

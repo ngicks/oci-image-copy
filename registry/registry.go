@@ -176,7 +176,13 @@ func (s *Source) pull(
 		Ref:      ref,
 		Platform: p,
 		Manifest: md,
-		Dir:      &cacheDir{cache: s.cache, platform: p, manifest: md},
+		Dir: store.SingleManifestDir(
+			func(_ context.Context, d digest.Digest) (ocidir.ReadAtCloser, error) {
+				return s.cache.Open(d)
+			},
+			p,
+			md,
+		),
 	}, nil
 }
 
@@ -244,45 +250,4 @@ func (s *Source) fetch(
 		return io.ReadAll(io.NewSectionReader(r, 0, r.Size()))
 	}
 	return nil, nil
-}
-
-// cacheDir serves a pulled image from the blob cache as a single-manifest oci-dir.
-type cacheDir struct {
-	cache    *blobcache.Cache
-	platform types.Platform
-	manifest ocispec.Descriptor
-}
-
-var _ ocidir.OciDir = (*cacheDir)(nil)
-
-func (d *cacheDir) Blobs(_ context.Context, dgst digest.Digest) (ocidir.ReadAtCloser, error) {
-	return d.cache.Open(dgst)
-}
-
-func (d *cacheDir) Index(context.Context) (ocispec.Index, error) {
-	m := d.manifest
-	m.Platform = &ocispec.Platform{
-		OS:           d.platform.OS,
-		Architecture: d.platform.Architecture,
-		Variant:      d.platform.Variant,
-	}
-	return ocispec.Index{
-		SchemaVersion: 2,
-		MediaType:     ocispec.MediaTypeImageIndex,
-		Manifests:     []ocispec.Descriptor{m},
-	}, nil
-}
-
-func (d *cacheDir) OciLayout(context.Context) (ocispec.ImageLayout, error) {
-	return ocispec.ImageLayout{Version: ocispec.ImageLayoutVersion}, nil
-}
-
-func (d *cacheDir) IndexBin(ctx context.Context) ([]byte, error) {
-	idx, _ := d.Index(ctx)
-	return json.Marshal(idx)
-}
-
-func (d *cacheDir) OciLayoutBin(ctx context.Context) ([]byte, error) {
-	l, _ := d.OciLayout(ctx)
-	return json.Marshal(l)
 }

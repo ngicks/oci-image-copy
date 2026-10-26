@@ -333,12 +333,11 @@ func (s *Store) image(
 	manifest ocispec.Descriptor,
 	leaf string,
 ) Image {
-	return Image{
-		Ref:      ref,
-		Platform: p,
-		Manifest: manifest,
-		Dir:      &leafDir{s: s, leaf: leaf, ref: ref, platform: p, manifest: manifest},
+	var dir ocidir.OciDir = &leafDir{s: s, leaf: leaf}
+	if leaf == "" {
+		dir = SingleManifestDir(s.Blob, p, manifest)
 	}
+	return Image{Ref: ref, Platform: p, Manifest: manifest, Dir: dir}
 }
 
 // Walk yields every leaf; it yields ErrNotListable when the backend cannot list.
@@ -413,13 +412,10 @@ func parseLeaf(leaf string) (types.Reference, types.Platform, error) {
 	return ref, p, err
 }
 
-// leafDir is the ocidir view of one leaf; leaf is empty for an image resolved from shared/blobs.
+// leafDir is the ocidir view of one leaf.
 type leafDir struct {
-	s        *Store
-	leaf     string
-	ref      types.Reference
-	platform types.Platform
-	manifest ocispec.Descriptor
+	s    *Store
+	leaf string
 }
 
 var _ ocidir.OciDir = (*leafDir)(nil)
@@ -447,15 +443,55 @@ func (d *leafDir) OciLayout(ctx context.Context) (ocispec.ImageLayout, error) {
 }
 
 func (d *leafDir) IndexBin(ctx context.Context) ([]byte, error) {
-	if d.leaf == "" {
-		return indexJSON(d.ref, d.platform, d.manifest)
-	}
 	return d.s.readAll(ctx, path.Join(d.leaf, ocispec.ImageIndexFile))
 }
 
 func (d *leafDir) OciLayoutBin(ctx context.Context) ([]byte, error) {
-	if d.leaf == "" {
-		return layoutJSON(), nil
-	}
 	return d.s.readAll(ctx, path.Join(d.leaf, ocispec.ImageLayoutFile))
+}
+
+// BlobOpener opens blobs by digest, e.g. (*Store).Blob or (*blobcache.Cache).Open.
+type BlobOpener func(ctx context.Context, dgst digest.Digest) (ocidir.ReadAtCloser, error)
+
+// SingleManifestDir views blobs as an oci-dir whose index.json holds only manifest, for platform p.
+func SingleManifestDir(
+	blobs BlobOpener,
+	p types.Platform,
+	manifest ocispec.Descriptor,
+) ocidir.OciDir {
+	return &singleManifestDir{blobs: blobs, platform: p, manifest: manifest}
+}
+
+type singleManifestDir struct {
+	blobs    BlobOpener
+	platform types.Platform
+	manifest ocispec.Descriptor
+}
+
+func (d *singleManifestDir) Blobs(
+	ctx context.Context,
+	dgst digest.Digest,
+) (ocidir.ReadAtCloser, error) {
+	return d.blobs(ctx, dgst)
+}
+
+func (d *singleManifestDir) Index(ctx context.Context) (ocispec.Index, error) {
+	var idx ocispec.Index
+	b, err := d.IndexBin(ctx)
+	if err != nil {
+		return idx, err
+	}
+	return idx, json.Unmarshal(b, &idx)
+}
+
+func (d *singleManifestDir) OciLayout(context.Context) (ocispec.ImageLayout, error) {
+	return ocispec.ImageLayout{Version: ocispec.ImageLayoutVersion}, nil
+}
+
+func (d *singleManifestDir) IndexBin(context.Context) ([]byte, error) {
+	return indexJSON(types.Reference{Digest: d.manifest.Digest}, d.platform, d.manifest)
+}
+
+func (d *singleManifestDir) OciLayoutBin(context.Context) ([]byte, error) {
+	return layoutJSON(), nil
 }

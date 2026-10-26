@@ -50,7 +50,7 @@ func (s *ociDirSource) Resolve(
 		Ref:      ref,
 		Platform: p,
 		Manifest: manifest,
-		Dir:      &singleManifest{dir: s.dir, ref: ref, platform: p, manifest: manifest},
+		Dir:      store.SingleManifestDir(s.dir.Blobs, p, manifest),
 	}, nil
 }
 
@@ -176,46 +176,4 @@ func (s *ociDirSource) readJSON(ctx context.Context, dgst digest.Digest, v any) 
 func isIndex(mediaType string) bool {
 	return mediaType == ocispec.MediaTypeImageIndex ||
 		mediaType == "application/vnd.docker.distribution.manifest.list.v2+json"
-}
-
-// singleManifest views dir as an oci-dir whose index.json holds only manifest.
-type singleManifest struct {
-	dir      ocidir.OciDir
-	ref      types.Reference
-	platform types.Platform
-	manifest ocispec.Descriptor
-}
-
-func (d *singleManifest) Blobs(
-	ctx context.Context,
-	dgst digest.Digest,
-) (ocidir.ReadAtCloser, error) {
-	return d.dir.Blobs(ctx, dgst)
-}
-
-func (d *singleManifest) Index(context.Context) (ocispec.Index, error) {
-	m := d.manifest
-	m.Platform = &ocispec.Platform{
-		OS:           d.platform.OS,
-		Architecture: d.platform.Architecture,
-		Variant:      d.platform.Variant,
-	}
-	return ocispec.Index{
-		SchemaVersion: 2,
-		MediaType:     ocispec.MediaTypeImageIndex,
-		Manifests:     []ocispec.Descriptor{m},
-	}, nil
-}
-
-func (d *singleManifest) OciLayout(ctx context.Context) (ocispec.ImageLayout, error) {
-	return d.dir.OciLayout(ctx)
-}
-
-func (d *singleManifest) IndexBin(ctx context.Context) ([]byte, error) {
-	idx, _ := d.Index(ctx)
-	return json.Marshal(idx)
-}
-
-func (d *singleManifest) OciLayoutBin(ctx context.Context) ([]byte, error) {
-	return d.dir.OciLayoutBin(ctx)
 }

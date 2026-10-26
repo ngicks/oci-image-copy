@@ -138,6 +138,15 @@ func (s *Storage) find(ref types.Reference, p types.Platform) (*storage.Image, [
 		}
 		candidates = imgs
 		key = storage.ImageDigestManifestBigDataNamePrefix + "-" + ref.Digest.String()
+		if len(imgs) == 0 {
+			// An index pin pulled from a store has no index bytes to record, so Pull names the
+			// image
+			// repo@<index digest> instead; its own manifest is the default one.
+			if img, err := s.store.Image(ref.String()); err == nil {
+				candidates = []*storage.Image{img}
+				key = storage.ImageDigestBigDataKey
+			}
+		}
 	} else {
 		img, err := s.store.Image(ref.String())
 		if err != nil {

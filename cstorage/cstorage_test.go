@@ -511,6 +511,49 @@ func TestPush(t *testing.T) {
 	})
 }
 
+// TestIndexPin_roundTrip pulls an index-pin alias leaf and pushes it back out under the same pin.
+func TestIndexPin_roundTrip(t *testing.T) {
+	ctx := t.Context()
+	base := build(t, "example.com/base:1", [][]byte{tarLayer(t, baseFiles[0])}, "")
+	src := storeWith(t, base)
+	m := base.manifest
+	m.Platform = &ocispec.Platform{OS: "linux", Architecture: "amd64"}
+	idx, _ := json.Marshal(ocispec.Index{
+		SchemaVersion: 2,
+		MediaType:     ocispec.MediaTypeImageIndex,
+		Manifests:     []ocispec.Descriptor{m},
+	})
+	pin := types.Reference{Repository: "example.com/base", Digest: digest.FromBytes(idx)}
+	if err := src.Commit(ctx, pin, amd64, base.manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newVFS(t)
+	cs := cstorage.New(st, newCache(t), nil)
+	pull(t, cs, src, pin.String())
+	rec, err := st.Image(pin.String())
+	if err != nil {
+		t.Fatalf("pulled image not found by its index pin: %v", err)
+	}
+	if !slices.Contains(rec.Digests, base.manifest.Digest) {
+		t.Errorf("Digests %v lack the manifest digest", rec.Digests)
+	}
+
+	dst := store.New(fsdir.NewStore(memfs.New("dst")))
+	set := types.ImageSetManifest{Images: []string{pin.String()}}
+	plan, err := transfer.PlanPush(ctx, cs.PushSource(dst), dst, set, []types.Platform{amd64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transfer.Push(ctx, plan, dst, nil); err != nil {
+		t.Fatal(err)
+	}
+	img, err := dst.Resolve(ctx, pin, amd64)
+	if err != nil || img.Manifest.Digest != base.manifest.Digest {
+		t.Errorf("pushed index pin: %v, %v; want the original manifest", img.Manifest.Digest, err)
+	}
+}
+
 func manifestOf(t *testing.T, s *store.Store, img store.Image) ocispec.Manifest {
 	t.Helper()
 	r, err := s.Blob(t.Context(), img.Manifest.Digest)

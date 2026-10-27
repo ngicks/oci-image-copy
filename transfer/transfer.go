@@ -228,8 +228,9 @@ func Push(ctx context.Context, p Plan, dst *store.Store, opt *Options) error {
 
 	for _, e := range p.Entries {
 		if err := ctx.Err(); err != nil {
-			errs = append(errs, err)
-			break
+			// A cancelled entry is reported like a failed one, so no entry looks committed.
+			errs = append(errs, &EntryError{Ref: e.Image.Ref, Platform: e.Image.Platform, Err: err})
+			continue
 		}
 		if err := dst.Commit(ctx, e.Image.Ref, e.Image.Platform, e.Image.Manifest); err != nil {
 			errs = append(errs, &EntryError{

@@ -1,6 +1,7 @@
 package transfer_test
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"slices"
@@ -184,5 +185,38 @@ func TestFromOciDir_ubuntu_Local(t *testing.T) {
 	}
 	if n := missingCount(again); n != 0 {
 		t.Errorf("re-plan has %d missing blobs, want 0", n)
+	}
+}
+
+func TestPush_cancelledEntriesFail(t *testing.T) {
+	f := ocidirtest.New()
+	src := fixtureSource(t, f)
+	dst := memStore()
+	set := types.ImageSetManifest{Images: []string{ocidirtest.SingleName, ocidirtest.MultiName}}
+	plan, err := transfer.PlanPush(t.Context(), src, dst, set, []types.Platform{amd64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transfer.Push(t.Context(), plan, dst, nil); err != nil {
+		t.Fatal(err)
+	}
+	// With every blob present, only the commits are left for the cancellation to stop.
+	plan, err = transfer.PlanPush(t.Context(), src, dst, set, []types.Platform{amd64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err = transfer.Push(ctx, plan, dst, nil)
+	failed := map[string]bool{}
+	for _, e := range err.(interface{ Unwrap() []error }).Unwrap() {
+		if entryErr, ok := errors.AsType[*transfer.EntryError](e); ok {
+			failed[entryErr.Ref.String()] = true
+		}
+	}
+	for _, e := range plan.Entries {
+		if !failed[e.Image.Ref.String()] {
+			t.Errorf("%s has no EntryError after cancellation: %v", e.Image.Ref, err)
+		}
 	}
 }

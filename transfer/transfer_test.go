@@ -76,6 +76,11 @@ func TestPush(t *testing.T) {
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("PlanPush: want the arm64 single entry to fail with fs.ErrNotExist, got %v", err)
 	}
+	entryErr, ok := errors.AsType[*transfer.EntryError](err)
+	if !ok || entryErr.Ref.String() != ocidirtest.SingleName || entryErr.Platform != arm64 {
+		t.Errorf("PlanPush: want an EntryError naming %s for %s, got %v",
+			ocidirtest.SingleName, arm64, err)
+	}
 	if len(plan.Entries) != 5 {
 		t.Fatalf("plan has %d entries, want 5", len(plan.Entries))
 	}

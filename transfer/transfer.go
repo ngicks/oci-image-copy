@@ -52,6 +52,22 @@ func (p Plan) Bytes() int64 {
 	return n
 }
 
+// EntryError is the failure of one entry; PlanPush and Push join one per failed entry, so a caller
+// can tell which entries failed with errors.As on each joined error.
+type EntryError struct {
+	Ref      types.Reference
+	Platform types.Platform
+	Err      error
+}
+
+func (e *EntryError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *EntryError) Unwrap() error {
+	return e.Err
+}
+
 type Event struct {
 	Ref      types.Reference
 	Platform types.Platform
@@ -116,18 +132,26 @@ func PlanPush(
 		for _, p := range platforms {
 			img, err := src.Resolve(ctx, ref, p)
 			if err != nil {
-				errs = append(errs, fmt.Errorf("transfer: %s for %s: %w", ref, p, err))
+				errs = append(errs, entryError(ref, p, err))
 				continue
 			}
 			e, err := Diff(ctx, img, dst)
 			if err != nil {
-				errs = append(errs, fmt.Errorf("transfer: %s for %s: %w", ref, p, err))
+				errs = append(errs, entryError(ref, p, err))
 				continue
 			}
 			plan.Entries = append(plan.Entries, e)
 		}
 	}
 	return plan, errors.Join(errs...)
+}
+
+func entryError(ref types.Reference, p types.Platform, err error) error {
+	return &EntryError{
+		Ref:      ref,
+		Platform: p,
+		Err:      fmt.Errorf("transfer: %s for %s: %w", ref, p, err),
+	}
 }
 
 // Diff splits img's blobs into those dst lacks and those it holds.
@@ -157,6 +181,8 @@ type upload struct {
 }
 
 // Push uploads missing blobs and commits each leaf; an entry failure does not stop other entries.
+// A failed upload is reported against the first entry that needs the blob; the other entries
+// needing it fail on commit.
 func Push(ctx context.Context, p Plan, dst *store.Store, opt *Options) error {
 	if opt == nil {
 		opt = &Options{}
@@ -187,9 +213,13 @@ func Push(ctx context.Context, p Plan, dst *store.Store, opt *Options) error {
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			if err := putBlob(ctx, p.Entries[u.entry], u.desc, dst, opt.Progress); err != nil {
+			e := p.Entries[u.entry]
+			if err := putBlob(ctx, e, u.desc, dst, opt.Progress); err != nil {
 				mu.Lock()
-				errs = append(errs, err)
+				errs = append(
+					errs,
+					&EntryError{Ref: e.Image.Ref, Platform: e.Image.Platform, Err: err},
+				)
 				mu.Unlock()
 			}
 		})
@@ -202,8 +232,12 @@ func Push(ctx context.Context, p Plan, dst *store.Store, opt *Options) error {
 			break
 		}
 		if err := dst.Commit(ctx, e.Image.Ref, e.Image.Platform, e.Image.Manifest); err != nil {
-			errs = append(errs, fmt.Errorf("transfer: committing %s for %s: %w",
-				e.Image.Ref, e.Image.Platform, err))
+			errs = append(errs, &EntryError{
+				Ref:      e.Image.Ref,
+				Platform: e.Image.Platform,
+				Err: fmt.Errorf("transfer: committing %s for %s: %w",
+					e.Image.Ref, e.Image.Platform, err),
+			})
 		}
 	}
 	return errors.Join(errs...)

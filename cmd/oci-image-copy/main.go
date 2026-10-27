@@ -11,6 +11,7 @@ import (
 
 	"github.com/ngicks/oci-image-copy/cmd/oci-image-copy/commands"
 	"github.com/ngicks/oci-image-copy/internal/cmdsignals"
+	"github.com/ngicks/oci-image-copy/ociimagecopy/cli"
 )
 
 func main() {
@@ -41,6 +42,6 @@ func main() {
 
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		os.Exit(cli.ExitCode(err))
 	}
 }

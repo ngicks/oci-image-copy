@@ -1,0 +1,17 @@
+{
+  "source": "store:SRC",
+  "destination": "containers-storage:",
+  "dry_run": false,
+  "bytes": 2048,
+  "entries": [
+    {
+      "ref": "example.com/cli/json:1",
+      "platform": "linux/amd64",
+      "manifest": "sha256:1fa06fdab865355759679abd52ad40f36d7d77dc118de9d5bafc6ea9aad8be91",
+      "missing": 2048,
+      "present": 0,
+      "fallback": false
+    }
+  ],
+  "failed": 0
+}

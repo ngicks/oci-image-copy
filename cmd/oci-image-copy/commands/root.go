@@ -29,7 +29,7 @@ func rootCmd() *cobra.Command {
 		Short:         "Copy image sets between an image store and containers-storage.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          cobra.NoArgs,
+		Args:          usageArgs(cobra.NoArgs),
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			if err := loggerfactory.ReadEnv(logConfig, "oci-image-copy", os.Environ()); err != nil {
 				fmt.Fprintln(os.Stderr, "warning:", err)
@@ -51,8 +51,12 @@ func rootCmd() *cobra.Command {
 	cmd.PersistentFlags().
 		StringVar(&flagConfig, "config", "", "config file path; overrides the default location")
 
+	cmd.SetFlagErrorFunc(usageFlagError)
+
 	versionCmd(cmd)
 	configCmd(cmd, &flagConfig)
+	copyCmd(cmd, &flagConfig)
+	listCmd(cmd, &flagConfig)
 
 	// TODO: declare additional root flags inside the `var (...)` block above
 	// and bind them with `cmd.PersistentFlags().<Type>Var(&flag, ...)`. Extend

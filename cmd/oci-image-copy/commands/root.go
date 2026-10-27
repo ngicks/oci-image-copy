@@ -29,7 +29,9 @@ func rootCmd() *cobra.Command {
 		Short:         "Copy image sets between an image store and containers-storage.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          usageArgs(cobra.NoArgs),
+		// copy and config share the "co" prefix with the built-in completion command.
+		CompletionOptions: cobra.CompletionOptions{HiddenDefaultCmd: true},
+		Args:              usageArgs(cobra.NoArgs),
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			if err := loggerfactory.ReadEnv(logConfig, "oci-image-copy", os.Environ()); err != nil {
 				fmt.Fprintln(os.Stderr, "warning:", err)

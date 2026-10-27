@@ -122,9 +122,6 @@ func runCopy(cmd *cobra.Command, args []string, flagConfig string, flags copyFla
 	if err != nil {
 		return err
 	}
-	if err := enterUserNamespace(src, dst); err != nil {
-		return err
-	}
 	set, err := ociimagecopy.ReadImageSet(args[2:], flags.sets)
 	if err != nil {
 		return err
@@ -138,6 +135,13 @@ func runCopy(cmd *cobra.Command, args []string, flagConfig string, flags copyFla
 		return err
 	}
 	defer func() { _ = svc.Close() }()
+	// The namespace setup may fail for host reasons, so input errors are reported first.
+	if err := ociimagecopy.ValidateCopy(src, dst, set); err != nil {
+		return err
+	}
+	if err := enterUserNamespace(src, dst); err != nil {
+		return err
+	}
 
 	out := cli.OutputText
 	switch {

@@ -5,11 +5,15 @@ go 1.27.0
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.4
+	github.com/caarlos0/env/v11 v11.4.1
 	github.com/klauspost/compress v1.20.3
+	github.com/ngicks/go-common/atomicsignal v0.0.2
+	github.com/ngicks/go-common/contextkey v0.3.0
 	github.com/ngicks/go-fsys-helper/stream v0.2.2-0.20260820002924-4f04f83b610e
 	github.com/ngicks/go-fsys-helper/vroot v0.0.2-0.20260820002924-4f04f83b610e
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
+	github.com/spf13/cobra v1.10.2
 	go.podman.io/image/v5 v5.42.0
 	go.podman.io/storage v1.65.0
 )
@@ -46,6 +50,7 @@ require (
 	github.com/google/go-intervals v0.0.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/pgzip v1.2.7 // indirect
 	github.com/mattn/go-runewidth v0.0.31 // indirect
@@ -68,6 +73,7 @@ require (
 	github.com/sigstore/sigstore v1.10.11 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/smallstep/pkcs7 v0.2.1 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stefanberger/go-pkcs11uri v0.0.0-20230803200340-78284954bff6 // indirect
 	github.com/tchap/go-patricia/v2 v2.3.3 // indirect
 	github.com/ulikunitz/xz v0.5.17 // indirect

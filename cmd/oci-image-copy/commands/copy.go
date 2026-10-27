@@ -122,6 +122,9 @@ func runCopy(cmd *cobra.Command, args []string, flagConfig string, flags copyFla
 	if err != nil {
 		return err
 	}
+	if err := enterUserNamespace(src, dst); err != nil {
+		return err
+	}
 	set, err := ociimagecopy.ReadImageSet(args[2:], flags.sets)
 	if err != nil {
 		return err

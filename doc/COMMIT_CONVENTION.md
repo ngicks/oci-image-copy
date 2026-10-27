@@ -86,8 +86,8 @@ character limit in the scope rules applies to comma-joined scopes.
 | `transfer` | `transfer/`                                                |
 | `registry` | `registry/`                                                |
 | `cstorage` | `cstorage/`                                                |
-| `ociimagecopy` | `ociimagecopy/` and `ociimagecopy/cli/`                |
-| `cmd`      | `cmd/oci-image-copy/` and the CLI helpers under `internal/` (`cmdsignals`, `libver`, `loggerfactory`, `templateutil`, `userdir`, `versioninfo`) |
+| `ociimagecopy` | `ociimagecopy/`, `ociimagecopy/cli/` and `internal/imagetest/` |
+| `cmd`      | `cmd/oci-image-copy/` and the CLI helpers under `internal/` (`cmdsignals`, `libver`, `loggerfactory`, `templateutil`, `userdir`, `userns`, `versioninfo`) |
 
 Guidelines for rows:
 

@@ -40,3 +40,20 @@ func isTerminal(w io.Writer) bool {
 	info, err := f.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
+
+// errWriter keeps the first write error, so a renderer can write freely and check once.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) Write(p []byte) (int, error) {
+	if e.err != nil {
+		return 0, e.err
+	}
+	n, err := e.w.Write(p)
+	if err != nil {
+		e.err = fmt.Errorf("writing output: %w", err)
+	}
+	return n, e.err
+}

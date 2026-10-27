@@ -46,6 +46,7 @@ func List(
 			Manifest: img.Manifest.Digest.String(),
 		})
 	}
+	ow := &errWriter{w: w}
 	if asJson {
 		if entries == nil {
 			entries = []ListEntry{}
@@ -54,13 +55,13 @@ func List(
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(w, string(b))
+		fmt.Fprintln(ow, string(b))
 	} else {
-		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		tw := tabwriter.NewWriter(ow, 0, 0, 2, ' ', 0)
 		for _, e := range entries {
 			fmt.Fprintf(tw, "%s\t%s\t%s\n", e.Ref, e.Platform, e.Manifest)
 		}
-		_ = tw.Flush()
+		_ = tw.Flush() // ow keeps the error
 	}
-	return errors.Join(errs...)
+	return errors.Join(append(errs, ow.err)...)
 }

@@ -57,6 +57,8 @@ func Copy(
 	set types.ImageSetManifest,
 	opt ociimagecopy.CopyOption,
 ) error {
+	ow := &errWriter{w: stdout}
+	stdout = ow
 	var prog *progress
 	if out == OutputText {
 		prog = newProgress(stderr, isTerminal(stderr))
@@ -90,20 +92,18 @@ func Copy(
 		return err
 	case OutputJson:
 		if err := renderReport(stdout, src, dst, opt.DryRun, res, failed, whole); err != nil {
-			return err
+			return errors.Join(whole, err)
 		}
 	default:
 		if !opt.DryRun && len(res.Entries) > 0 {
 			renderResults(stdout, res, failed)
 		}
 	}
-	if whole != nil {
-		return whole
-	}
+	var counted error
 	if failed > 0 {
-		return fmt.Errorf("%d of %s failed", failed, plural(len(res.Entries), "entry"))
+		counted = fmt.Errorf("%d of %s failed", failed, plural(len(res.Entries), "entry"))
 	}
-	return nil
+	return errors.Join(whole, counted, ow.err)
 }
 
 // unattributed returns the parts of err that are not one entry's failure.
@@ -156,7 +156,7 @@ func renderPlan(w io.Writer, res ociimagecopy.Result, dryRun bool) {
 		fmt.Fprintf(tw, "  %s\tmissing %s\tpresent %s%s\n",
 			entryName(e.Ref, e.Platform), humanBytes(e.Missing), humanBytes(e.Present), note)
 	}
-	_ = tw.Flush()
+	_ = tw.Flush() // errWriter keeps the error
 	if dryRun {
 		fmt.Fprintln(w, "dry run: nothing transferred")
 	}
@@ -171,7 +171,7 @@ func renderResults(w io.Writer, res ociimagecopy.Result, failed int) {
 		}
 		fmt.Fprintf(tw, "ok\t%s\t%s\n", entryName(e.Ref, e.Platform), e.Manifest)
 	}
-	_ = tw.Flush()
+	_ = tw.Flush() // errWriter keeps the error
 	fmt.Fprintf(w, "copied %d of %s\n", len(res.Entries)-failed, plural(len(res.Entries), "entry"))
 }
 

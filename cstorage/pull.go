@@ -98,12 +98,17 @@ func (s *Storage) planEntry(
 
 // keepInStore pushes a fallback-resolved image into src so the next pull finds it there;
 // a read-only store is left alone.
-func keepInStore(ctx context.Context, img store.Image, src *store.Store) error {
+func keepInStore(
+	ctx context.Context,
+	img store.Image,
+	src *store.Store,
+	opt *transfer.Options,
+) error {
 	e, err := transfer.Diff(ctx, img, src)
 	if err != nil {
 		return err
 	}
-	err = transfer.Push(ctx, transfer.Plan{Entries: []transfer.Entry{e}}, src, nil)
+	err = transfer.Push(ctx, transfer.Plan{Entries: []transfer.Entry{e}}, src, opt)
 	if errors.Is(err, errors.ErrUnsupported) {
 		return nil
 	}
@@ -162,8 +167,13 @@ func (s *Storage) Pull(
 	var errs []error
 	for _, e := range p.Entries {
 		if err := ctx.Err(); err != nil {
-			errs = append(errs, err)
-			break
+			// A cancelled entry is reported like a failed one, so no entry looks imported.
+			errs = append(errs, &transfer.EntryError{
+				Ref:      e.Image.Ref,
+				Platform: e.Image.Platform,
+				Err:      err,
+			})
+			continue
 		}
 		if err := s.pullEntry(ctx, e, src, opt); err != nil {
 			errs = append(errs, &transfer.EntryError{
@@ -189,7 +199,7 @@ func (s *Storage) pullEntry(
 ) error {
 	img := e.Image
 	if e.Fallback {
-		if err := keepInStore(ctx, img, src); err != nil {
+		if err := keepInStore(ctx, img, src, opt); err != nil {
 			return err
 		}
 	}

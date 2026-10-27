@@ -22,6 +22,8 @@ func TestParseLocation(t *testing.T) {
 		{"containers-storage:", KindContainersStorage, "", true},
 		{"store:/srv/images", KindStore, "file:///srv/images", true},
 		{"store:file:///srv/images", KindStore, "file:///srv/images", true},
+		{"store:file:/srv/images", KindStore, "file:///srv/images", true},
+		{"store:file://localhost/srv/images", KindStore, "file:///srv/images", true},
 		{
 			"store:rel/dir",
 			KindStore,
@@ -66,6 +68,9 @@ func TestParseLocation_invalid(t *testing.T) {
 		"store:https://mirror.example/base?token=1",
 		"store:https://mirror.example/base#frag",
 		"store:ftp://host/dir",
+		"store:file://remote/srv/images",
+		"store:file:///srv/images?x=1",
+		"store:file:relative",
 	} {
 		if _, err := ParseLocation(in); !errors.Is(err, ErrInvalidLocation) {
 			t.Errorf("ParseLocation(%q) = %v, want ErrInvalidLocation", in, err)

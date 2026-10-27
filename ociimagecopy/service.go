@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/klauspost/compress/zstd"
+	"github.com/ngicks/go-fsys-helper/vroot/memfs"
 	"github.com/ngicks/go-fsys-helper/vroot/osfs"
 	"go.podman.io/storage"
 
@@ -158,19 +160,33 @@ func (s *Service) s3Client(ctx context.Context) (s3dir.StoreClient, error) {
 	return s.s3, nil
 }
 
-// openStore opens the store at loc; create makes a missing filesystem store directory.
+type openMode int
+
+const (
+	mustExist openMode = iota
+	// create makes a missing filesystem store directory.
+	create
+	// emptyIfMissing serves a missing filesystem store as an empty one, without creating it.
+	emptyIfMissing
+)
+
 func (s *Service) openStore(
 	ctx context.Context,
 	loc Location,
-	create bool,
+	mode openMode,
 ) (*store.Store, func() error, error) {
 	noop := func() error { return nil }
 	switch loc.URL.Scheme {
 	case "file":
 		dir := filepath.FromSlash(loc.URL.Path)
-		if create {
+		switch mode {
+		case create:
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return nil, nil, fmt.Errorf("ociimagecopy: creating %s: %w", loc, err)
+			}
+		case emptyIfMissing:
+			if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+				return store.New(fsdir.NewStore(memfs.New(dir))), noop, nil
 			}
 		}
 		root, err := osfs.NewRoot(dir)

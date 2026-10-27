@@ -224,8 +224,8 @@ func TestCopy_dryRun(t *testing.T) {
 	if res.Plan.Bytes() == 0 {
 		t.Error("dry-run push planned nothing")
 	}
-	for img, err := range svc.List(ctx, dst, ociimagecopy.ListOption{}) {
-		t.Errorf("dry-run push stored %v (%v)", img.Ref, err)
+	if _, err := os.Stat(dst.URL.Path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("dry-run push created the destination directory: %v", err)
 	}
 	if err := svc.Close(); err != nil {
 		t.Fatal(err)
@@ -263,6 +263,25 @@ func TestCopy_partialFailure(t *testing.T) {
 	}
 	if res.Entries[1].Err != nil || res.Entries[1].Manifest == "" {
 		t.Errorf("present entry: %+v, want success", res.Entries[1])
+	}
+}
+
+func TestCopy_exactPlatform(t *testing.T) {
+	const ref = "example.com/hello:1"
+	src, _ := storeDir(t, ref)
+	svc := newService(t, t.TempDir())
+	v2 := types.Platform{OS: "linux", Architecture: "amd64", Variant: "v2"}
+	res, err := svc.Copy(t.Context(), src, cs, set(ref),
+		ociimagecopy.CopyOption{Platforms: []types.Platform{v2, amd64}})
+	if err == nil {
+		t.Fatal("want the linux/amd64/v2 entry to fail")
+	}
+	if res.Entries[0].Platform != v2 || res.Entries[0].Err == nil {
+		t.Errorf("v2 entry %+v, want its own failure", res.Entries[0])
+	}
+	if res.Entries[1].Platform != amd64 || res.Entries[1].Err != nil ||
+		res.Entries[1].Manifest == "" {
+		t.Errorf("amd64 entry %+v, want success", res.Entries[1])
 	}
 }
 

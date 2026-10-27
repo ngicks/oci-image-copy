@@ -86,24 +86,12 @@ func (s *Service) Copy(
 	set types.ImageSetManifest,
 	opt CopyOption,
 ) (Result, error) {
-	if err := src.validate(); err != nil {
-		return Result{}, err
-	}
-	if err := dst.validate(); err != nil {
-		return Result{}, err
-	}
-	push := src.Kind == KindContainersStorage && dst.Kind == KindStore
-	pull := src.Kind == KindStore && dst.Kind == KindContainersStorage
-	if !push && !pull {
-		return Result{}, fmt.Errorf("%w: %s to %s", ErrUnsupportedDirection, src, dst)
-	}
-	if !dst.Writable() {
-		return Result{}, fmt.Errorf("%w: %s", ErrReadOnly, dst)
-	}
-	refs, err := parseSet(set)
+	refs, err := checkCopy(src, dst, set)
 	if err != nil {
 		return Result{}, err
 	}
+	push := src.Kind == KindContainersStorage
+	pull := !push
 	platforms := opt.Platforms
 	if len(platforms) == 0 {
 		platforms = []types.Platform{types.HostPlatform()}
@@ -117,7 +105,13 @@ func (s *Service) Copy(
 	if pull {
 		storeLoc = src
 	}
-	st, closeStore, err := s.openStore(ctx, storeLoc, push)
+	mode := mustExist
+	if push && opt.DryRun {
+		mode = emptyIfMissing
+	} else if push {
+		mode = create
+	}
+	st, closeStore, err := s.openStore(ctx, storeLoc, mode)
 	if err != nil {
 		return Result{}, err
 	}
@@ -206,6 +200,31 @@ func ReadImageSet(images []string, paths []string) (types.ImageSetManifest, erro
 	return set, nil
 }
 
+// ValidateCopy reports the usage error Copy would return for these arguments, without opening
+// anything.
+func ValidateCopy(src, dst Location, set types.ImageSetManifest) error {
+	_, err := checkCopy(src, dst, set)
+	return err
+}
+
+func checkCopy(src, dst Location, set types.ImageSetManifest) ([]types.Reference, error) {
+	if err := src.validate(); err != nil {
+		return nil, err
+	}
+	if err := dst.validate(); err != nil {
+		return nil, err
+	}
+	push := src.Kind == KindContainersStorage && dst.Kind == KindStore
+	pull := src.Kind == KindStore && dst.Kind == KindContainersStorage
+	if !push && !pull {
+		return nil, fmt.Errorf("%w: %s to %s", ErrUnsupportedDirection, src, dst)
+	}
+	if !dst.Writable() {
+		return nil, fmt.Errorf("%w: %s", ErrReadOnly, dst)
+	}
+	return parseSet(set)
+}
+
 func parseSet(set types.ImageSetManifest) ([]types.Reference, error) {
 	if len(set.Images) == 0 {
 		return nil, fmt.Errorf("%w: no images given", ErrInvalidReference)
@@ -237,17 +256,13 @@ func newResult(refs []types.Reference, platforms []types.Platform, plan transfer
 	for _, ref := range refs {
 		for _, p := range platforms {
 			er := EntryResult{Ref: ref, Platform: p}
+			// Sources return the requested platform, so the match is exact; a wildcard match would
+			// let linux/arm64 claim the entry planned for linux/arm64/v8.
 			for i, e := range plan.Entries {
-				if used[i] || e.Image.Ref != ref ||
-					!p.Matches(ocispec.Platform{
-						OS:           e.Image.Platform.OS,
-						Architecture: e.Image.Platform.Architecture,
-						Variant:      e.Image.Platform.Variant,
-					}) {
+				if used[i] || e.Image.Ref != ref || e.Image.Platform != p {
 					continue
 				}
 				used[i] = true
-				er.Platform = e.Image.Platform
 				er.Manifest = e.Image.Manifest.Digest
 				er.Missing = sumSize(e.Missing)
 				er.Present = sumSize(e.Present)
@@ -268,8 +283,7 @@ func sumSize(descs []ocispec.Descriptor) int64 {
 	return n
 }
 
-// record attaches each *transfer.EntryError in err to its entry and returns the rest.
-// An entry error matches by reference and by the platform either requested or resolved.
+// record joins each *transfer.EntryError in err into its entry's Err and returns the rest.
 func (r *Result) record(err error) error {
 	var rest []error
 	for _, e := range flatten(err) {
@@ -281,8 +295,9 @@ func (r *Result) record(err error) error {
 		matched := false
 		for i := range r.Entries {
 			er := &r.Entries[i]
-			if er.Err == nil && er.Ref == entryErr.Ref && er.Platform == entryErr.Platform {
-				er.Err = entryErr
+			if er.Ref == entryErr.Ref && er.Platform == entryErr.Platform {
+				// An entry can fail twice, as an upload and then as a commit.
+				er.Err = errors.Join(er.Err, entryErr)
 				matched = true
 				break
 			}
@@ -344,7 +359,7 @@ func (s *Service) List(
 			))
 			return
 		}
-		st, closeStore, err := s.openStore(ctx, loc, false)
+		st, closeStore, err := s.openStore(ctx, loc, mustExist)
 		if err != nil {
 			yield(store.Image{}, err)
 			return

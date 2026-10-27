@@ -53,13 +53,25 @@ func ParseLocation(s string) (Location, error) {
 		)
 	}
 	var u *url.URL
-	if scheme, _, ok := strings.Cut(rest, "://"); ok && !strings.ContainsAny(scheme, `/\`) {
+	scheme, _, isURL := strings.Cut(rest, "://")
+	isURL = isURL && !strings.ContainsAny(scheme, `/\`)
+	// file:/path is the URI form without authority. Any other "x:" prefix stays part of a path,
+	// as a Windows drive letter does.
+	if isURL || strings.HasPrefix(rest, "file:") {
 		var err error
 		u, err = url.Parse(rest)
 		if err != nil {
 			return Location{}, fmt.Errorf("%w: %q: %w", ErrInvalidLocation, s, err)
 		}
 		if u.Scheme == "file" {
+			if (u.Host != "" && u.Host != "localhost") || u.User != nil || u.RawQuery != "" ||
+				u.Fragment != "" || u.ForceQuery || u.Opaque != "" {
+				return Location{}, fmt.Errorf(
+					"%w: %q: a file URL takes only a local absolute path",
+					ErrInvalidLocation,
+					s,
+				)
+			}
 			u = &url.URL{Scheme: "file", Path: u.Path}
 		}
 	} else {

@@ -1,6 +1,7 @@
 package ociimagecopy
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -57,7 +58,7 @@ func TestLoadConfig_layers(t *testing.T) {
 func TestLoadConfig_badEnv(t *testing.T) {
 	t.Setenv("OCI_IMAGE_COPY_CONF", filepath.Join(t.TempDir(), "absent.json"))
 	t.Setenv("OCI_IMAGE_COPY_CONCURRENCY", "many")
-	if _, err := LoadConfig(""); err == nil {
-		t.Fatal("unparsable env value: want error")
+	if _, err := LoadConfig(""); !errors.Is(err, ErrInvalidConfig) || !IsUsage(err) {
+		t.Fatalf("unparsable env value: got %v, want ErrInvalidConfig", err)
 	}
 }

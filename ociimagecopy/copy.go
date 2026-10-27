@@ -2,9 +2,11 @@ package ociimagecopy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
+	"os"
 
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -18,6 +20,7 @@ var (
 	ErrUnsupportedDirection = errors.New("ociimagecopy: unsupported source and destination pair")
 	ErrReadOnly             = errors.New("ociimagecopy: destination is read-only")
 	ErrInvalidReference     = errors.New("ociimagecopy: invalid image reference")
+	ErrInvalidPlatform      = errors.New("ociimagecopy: invalid platform")
 )
 
 // IsUsage reports whether err comes from the caller's input rather than from a transfer.
@@ -25,6 +28,7 @@ func IsUsage(err error) bool {
 	for _, target := range []error{
 		ErrInvalidLocation,
 		ErrInvalidReference,
+		ErrInvalidPlatform,
 		ErrInvalidConfig,
 		ErrUnsupportedDirection,
 		ErrReadOnly,
@@ -36,13 +40,15 @@ func IsUsage(err error) bool {
 	return false
 }
 
-type CopyOptions struct {
+type CopyOption struct {
 	// Platforms lists the platforms copied for every image; nil means the host platform.
 	Platforms []types.Platform
 	// DryRun plans without writing to the destination or the source store.
 	// Planning may still fill the blob cache: a push compresses layers to learn their digests,
 	// and a registry fallback downloads the image.
 	DryRun bool
+	// Planned, when non-nil, receives the result of planning before anything is transferred.
+	Planned func(Result)
 	// Progress is called from multiple goroutines.
 	Progress func(Event)
 }
@@ -78,7 +84,7 @@ func (s *Service) Copy(
 	ctx context.Context,
 	src, dst Location,
 	set types.ImageSetManifest,
-	opt CopyOptions,
+	opt CopyOption,
 ) (Result, error) {
 	if err := src.validate(); err != nil {
 		return Result{}, err
@@ -141,6 +147,9 @@ func (s *Service) Copy(
 	if err := res.record(planErr); err != nil {
 		return res, err
 	}
+	if opt.Planned != nil {
+		opt.Planned(res)
+	}
 	if opt.DryRun {
 		return res, res.err()
 	}
@@ -156,6 +165,45 @@ func (s *Service) Copy(
 		return res, errors.Join(err, res.err())
 	}
 	return res, res.err()
+}
+
+// ParsePlatforms parses os/arch[/variant] strings.
+func ParsePlatforms(ss []string) ([]types.Platform, error) {
+	var (
+		out  []types.Platform
+		errs []error
+	)
+	for _, s := range ss {
+		p, err := types.ParsePlatform(s)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%w: %w", ErrInvalidPlatform, err))
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, errors.Join(errs...)
+}
+
+// ReadImageSet merges images with the images of each image set file at paths, in that order.
+func ReadImageSet(images []string, paths []string) (types.ImageSetManifest, error) {
+	set := types.ImageSetManifest{Images: append([]string{}, images...)}
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return types.ImageSetManifest{}, fmt.Errorf("%w: %w", ErrInvalidReference, err)
+		}
+		var f types.ImageSetManifest
+		if err := json.Unmarshal(b, &f); err != nil {
+			return types.ImageSetManifest{}, fmt.Errorf(
+				"%w: image set %s: %w",
+				ErrInvalidReference,
+				p,
+				err,
+			)
+		}
+		set.Images = append(set.Images, f.Images...)
+	}
+	return set, nil
 }
 
 func parseSet(set types.ImageSetManifest) ([]types.Reference, error) {
@@ -270,19 +318,30 @@ func (r Result) err() error {
 	return errors.Join(errs...)
 }
 
-// List yields every image and platform in a filesystem or S3 store; an http(s) store yields
-// store.ErrNotListable.
-func (s *Service) List(ctx context.Context, loc Location) iter.Seq2[store.Image, error] {
+// ListOption narrows List.
+type ListOption struct {
+	// Repository, when set, keeps only the images of that repository.
+	Repository string
+}
+
+// List yields every image and platform in a filesystem or S3 store.
+// Any other location yields a single ErrInvalidLocation.
+func (s *Service) List(
+	ctx context.Context,
+	loc Location,
+	opt ListOption,
+) iter.Seq2[store.Image, error] {
 	return func(yield func(store.Image, error) bool) {
 		if err := loc.validate(); err != nil {
 			yield(store.Image{}, err)
 			return
 		}
-		if loc.Kind != KindStore {
-			yield(
-				store.Image{},
-				fmt.Errorf("%w: list takes a store, not %s", ErrInvalidLocation, loc),
-			)
+		if loc.Kind != KindStore || (loc.URL.Scheme != "file" && loc.URL.Scheme != "s3") {
+			yield(store.Image{}, fmt.Errorf(
+				"%w: %s cannot be listed; list takes a filesystem or S3 store",
+				ErrInvalidLocation,
+				loc,
+			))
 			return
 		}
 		st, closeStore, err := s.openStore(ctx, loc, false)
@@ -292,6 +351,9 @@ func (s *Service) List(ctx context.Context, loc Location) iter.Seq2[store.Image,
 		}
 		defer func() { _ = closeStore() }()
 		for img, err := range st.Walk(ctx) {
+			if err == nil && opt.Repository != "" && img.Ref.Repository != opt.Repository {
+				continue
+			}
 			if !yield(img, err) {
 				return
 			}

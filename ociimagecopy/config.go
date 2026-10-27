@@ -126,7 +126,7 @@ func LoadConfig(flagPath string) (Config, error) {
 
 	var envPartial PartialConfig
 	if err := env.ParseWithOptions(&envPartial, envOptions); err != nil {
-		return cfg, err
+		return cfg, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 	cfg = envPartial.Apply(cfg)
 
@@ -141,11 +141,11 @@ func unmarshalConfigFile(path string) (PartialConfig, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return PartialConfig{}, nil
 		}
-		return PartialConfig{}, fmt.Errorf("read config %q: %w", path, err)
+		return PartialConfig{}, fmt.Errorf("%w: read config %q: %w", ErrInvalidConfig, path, err)
 	}
 	var p PartialConfig
 	if err := json.Unmarshal(b, &p); err != nil {
-		return PartialConfig{}, fmt.Errorf("parse config %q: %w", path, err)
+		return PartialConfig{}, fmt.Errorf("%w: parse config %q: %w", ErrInvalidConfig, path, err)
 	}
 	return p, nil
 }
@@ -159,7 +159,7 @@ func configPath(flagPath string) (string, error) {
 	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 	return filepath.Join(dir, defaultConfigDir, "config.json"), nil
 }

@@ -1,8 +1,6 @@
 package ociimagecopy_test
 
 import (
-	"archive/tar"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,15 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"github.com/ngicks/go-fsys-helper/vroot/osfs"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.podman.io/storage"
 	"go.podman.io/storage/pkg/reexec"
 
-	"github.com/ngicks/oci-image-copy/ocidir/fsdir"
+	"github.com/ngicks/oci-image-copy/internal/imagetest"
 	"github.com/ngicks/oci-image-copy/ociimagecopy"
 	"github.com/ngicks/oci-image-copy/store"
 	"github.com/ngicks/oci-image-copy/types"
@@ -32,7 +28,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-var amd64 = types.Platform{OS: "linux", Architecture: "amd64"}
+var amd64 = imagetest.Amd64
 
 type noFallback struct{}
 
@@ -86,75 +82,16 @@ func images(t *testing.T, graph string) []storage.Image {
 	return imgs
 }
 
-func tarLayer(t *testing.T, name, body string) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	w := tar.NewWriter(&buf)
-	if err := w.WriteHeader(&tar.Header{
-		Name: name, Mode: 0o644, Size: int64(len(body)),
-		ModTime: time.Unix(0, 0), Typeflag: tar.TypeReg, Format: tar.FormatPAX,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Write([]byte(body)); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-// storeDir creates a filesystem store holding ref with one uncompressed tar layer and returns its
-// location and the config digest (the containers-storage image ID).
+// storeDir creates a filesystem store holding ref and returns its location and the image ID.
 func storeDir(t *testing.T, ref string) (ociimagecopy.Location, digest.Digest) {
 	t.Helper()
-	ctx := t.Context()
 	dir := t.TempDir()
-	root, err := osfs.NewRoot(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = root.Close() }()
-	st := store.New(fsdir.NewStore(root))
-	put := func(mediaType string, b []byte) ocispec.Descriptor {
-		d := ocispec.Descriptor{
-			MediaType: mediaType,
-			Digest:    digest.FromBytes(b),
-			Size:      int64(len(b)),
-		}
-		if err := st.PutBlob(ctx, d, bytes.NewReader(b)); err != nil {
-			t.Fatal(err)
-		}
-		return d
-	}
-	layer := tarLayer(t, "etc/hello", ref+"\n")
-	ld := put(ocispec.MediaTypeImageLayer, layer)
-	cfg, _ := json.Marshal(ocispec.Image{
-		OS:           "linux",
-		Architecture: "amd64",
-		RootFS:       ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{ld.Digest}},
-	})
-	cd := put(ocispec.MediaTypeImageConfig, cfg)
-	m, _ := json.Marshal(ocispec.Manifest{
-		SchemaVersion: 2,
-		MediaType:     ocispec.MediaTypeImageManifest,
-		Config:        cd,
-		Layers:        []ocispec.Descriptor{ld},
-	})
-	md := put(ocispec.MediaTypeImageManifest, m)
-	r, err := types.ParseReference(ref)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Commit(ctx, r, amd64, md); err != nil {
-		t.Fatal(err)
-	}
+	id := imagetest.WriteStore(t, dir, ref)
 	loc, err := ociimagecopy.ParseLocation("store:" + dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return loc, cd.Digest
+	return loc, id
 }
 
 func emptyStore(t *testing.T) ociimagecopy.Location {
@@ -179,7 +116,7 @@ func manifestLayers(
 ) []ocispec.Descriptor {
 	t.Helper()
 	var out []ocispec.Descriptor
-	for img, err := range svc.List(t.Context(), loc) {
+	for img, err := range svc.List(t.Context(), loc, ociimagecopy.ListOption{}) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -206,7 +143,7 @@ func TestCopy_roundTrip(t *testing.T) {
 	ctx := t.Context()
 	const ref = "example.com/hello:1"
 	src, imageId := storeDir(t, ref)
-	opt := ociimagecopy.CopyOptions{Platforms: []types.Platform{amd64}}
+	opt := ociimagecopy.CopyOption{Platforms: []types.Platform{amd64}}
 
 	first := t.TempDir()
 	svc := newService(t, first)
@@ -262,7 +199,7 @@ func TestCopy_dryRun(t *testing.T) {
 	ctx := t.Context()
 	const ref = "example.com/hello:1"
 	src, _ := storeDir(t, ref)
-	opt := ociimagecopy.CopyOptions{Platforms: []types.Platform{amd64}, DryRun: true}
+	opt := ociimagecopy.CopyOption{Platforms: []types.Platform{amd64}, DryRun: true}
 
 	graph := t.TempDir()
 	svc := newService(t, graph)
@@ -287,7 +224,7 @@ func TestCopy_dryRun(t *testing.T) {
 	if res.Plan.Bytes() == 0 {
 		t.Error("dry-run push planned nothing")
 	}
-	for img, err := range svc.List(ctx, dst) {
+	for img, err := range svc.List(ctx, dst, ociimagecopy.ListOption{}) {
 		t.Errorf("dry-run push stored %v (%v)", img.Ref, err)
 	}
 	if err := svc.Close(); err != nil {
@@ -314,7 +251,7 @@ func TestCopy_partialFailure(t *testing.T) {
 	src, _ := storeDir(t, ref)
 	svc := newService(t, t.TempDir())
 	res, err := svc.Copy(ctx, src, cs, set("example.com/absent:1", ref),
-		ociimagecopy.CopyOptions{Platforms: []types.Platform{amd64}})
+		ociimagecopy.CopyOption{Platforms: []types.Platform{amd64}})
 	if err == nil || ociimagecopy.IsUsage(err) {
 		t.Fatalf("want a non-usage error, got %v", err)
 	}
@@ -354,7 +291,7 @@ func TestCopy_usage(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := svc.Copy(ctx, tc.src, tc.dst, tc.set, ociimagecopy.CopyOptions{})
+			_, err := svc.Copy(ctx, tc.src, tc.dst, tc.set, ociimagecopy.CopyOption{})
 			if !errors.Is(err, tc.want) || !ociimagecopy.IsUsage(err) {
 				t.Errorf("got %v, want %v", err, tc.want)
 			}

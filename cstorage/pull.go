@@ -19,12 +19,13 @@ import (
 )
 
 // PlanPull diffs each entry's layer chain against containers-storage by chain ID;
-// an entry missing from src is resolved through Options.Fallback and, when src is writable, pushed
-// into it.
+// an entry missing from src is resolved through Options.Fallback. Planning writes nothing to src or
+// containers-storage; the fallback may fill the blob cache.
 //
 // In each entry, Missing holds the layers to download and Present the layers of the present chain
 // prefix.
-// The plan holds every entry that resolved; the error joins the failures of the others.
+// The plan holds every entry that resolved; the error joins a *transfer.EntryError per failure of
+// the others.
 func (s *Storage) PlanPull(
 	ctx context.Context,
 	src *store.Store,
@@ -43,7 +44,11 @@ func (s *Storage) PlanPull(
 		}
 		entry, err := s.planEntry(ctx, src, ref, p)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("cstorage: %s for %s: %w", ref, p, err))
+			errs = append(errs, &transfer.EntryError{
+				Ref:      ref,
+				Platform: p,
+				Err:      fmt.Errorf("cstorage: %s for %s: %w", ref, p, err),
+			})
 			continue
 		}
 		plan.Entries = append(plan.Entries, entry)
@@ -62,9 +67,6 @@ func (s *Storage) planEntry(
 	if errors.Is(err, fs.ErrNotExist) && s.opt.Fallback != nil {
 		img, err = s.opt.Fallback.Resolve(ctx, ref, p)
 		fallback = true
-		if err == nil {
-			err = keepInStore(ctx, img, src)
-		}
 	}
 	if err != nil {
 		return transfer.Entry{}, err
@@ -144,7 +146,10 @@ func readImage(ctx context.Context, img store.Image) (ocispec.Manifest, ocispec.
 }
 
 // Pull fetches missing layers into the blob cache, applies them, and writes the image records.
-// An entry failure does not stop other entries.
+// A fallback-resolved entry is first pushed into src, when src is writable, so the next pull finds
+// it there.
+// An entry failure does not stop other entries; the error joins a *transfer.EntryError per failed
+// entry.
 func (s *Storage) Pull(
 	ctx context.Context,
 	p transfer.Plan,
@@ -160,18 +165,34 @@ func (s *Storage) Pull(
 			errs = append(errs, err)
 			break
 		}
-		if err := s.pullEntry(ctx, e, opt); err != nil {
-			errs = append(
-				errs,
-				fmt.Errorf("cstorage: pulling %s for %s: %w", e.Image.Ref, e.Image.Platform, err),
-			)
+		if err := s.pullEntry(ctx, e, src, opt); err != nil {
+			errs = append(errs, &transfer.EntryError{
+				Ref:      e.Image.Ref,
+				Platform: e.Image.Platform,
+				Err: fmt.Errorf(
+					"cstorage: pulling %s for %s: %w",
+					e.Image.Ref,
+					e.Image.Platform,
+					err,
+				),
+			})
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (s *Storage) pullEntry(ctx context.Context, e transfer.Entry, opt *transfer.Options) error {
+func (s *Storage) pullEntry(
+	ctx context.Context,
+	e transfer.Entry,
+	src *store.Store,
+	opt *transfer.Options,
+) error {
 	img := e.Image
+	if e.Fallback {
+		if err := keepInStore(ctx, img, src); err != nil {
+			return err
+		}
+	}
 	m, cfg, err := readImage(ctx, img)
 	if err != nil {
 		return err

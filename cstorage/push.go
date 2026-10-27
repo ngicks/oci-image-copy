@@ -22,11 +22,6 @@ import (
 	"github.com/ngicks/oci-image-copy/types"
 )
 
-// zstdLevel is pinned: zstd output changes with the library version and level, and nothing may rely
-// on it,
-// but a fixed level keeps repeated pushes of one image from one build identical in practice.
-const zstdLevel = zstd.SpeedDefault
-
 // PushSource binds the push source to dst, so layers whose original blob dst already holds stay
 // as-is.
 //
@@ -277,7 +272,7 @@ func (s *Storage) exportZstd(ctx context.Context, l *storage.Layer) (ocispec.Des
 	pr, pw := io.Pipe()
 	digester := digest.Canonical.Digester()
 	go func() {
-		enc, err := zstd.NewWriter(pw, zstd.WithEncoderLevel(zstdLevel))
+		enc, err := zstd.NewWriter(pw, zstd.WithEncoderLevel(s.zstdLevel()))
 		if err != nil {
 			_ = pw.CloseWithError(err)
 			return

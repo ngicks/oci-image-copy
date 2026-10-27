@@ -11,6 +11,7 @@
 package cstorage
 
 import (
+	"github.com/klauspost/compress/zstd"
 	"github.com/opencontainers/go-digest"
 	"go.podman.io/storage"
 
@@ -22,6 +23,11 @@ type Options struct {
 	// Fallback resolves entries missing from the store during pull, normally a *registry.Source;
 	// nil disables it.
 	Fallback transfer.Source
+	// CompressionLevel is the zstd level for layers push compresses anew; 0 means
+	// zstd.SpeedBestCompression.
+	// zstd output changes with the library version and level, and nothing relies on it, but a
+	// fixed level keeps repeated pushes of one image from one build identical in practice.
+	CompressionLevel zstd.EncoderLevel
 }
 
 type Storage struct {
@@ -60,6 +66,13 @@ func New(st storage.Store, cache *blobcache.Cache, opt *Options) *Storage {
 		s.opt = *opt
 	}
 	return s
+}
+
+func (s *Storage) zstdLevel() zstd.EncoderLevel {
+	if s.opt.CompressionLevel == 0 {
+		return zstd.SpeedBestCompression
+	}
+	return s.opt.CompressionLevel
 }
 
 func (s *Storage) Close() error {

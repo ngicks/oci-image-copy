@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/ngicks/go-fsys-helper/vroot/memfs"
 	"github.com/ngicks/go-fsys-helper/vroot/osfs"
 	"github.com/opencontainers/go-digest"
@@ -387,9 +389,19 @@ func TestPull_fallback(t *testing.T) {
 		newCache(t),
 		&cstorage.Options{Fallback: transfer.FromOciDir(fsdir.New(root, nil))},
 	)
-	plan := pull(t, cs, src, base.ref.String())
+	set := types.ImageSetManifest{Images: []string{base.ref.String()}}
+	plan, err := cs.PlanPull(t.Context(), src, set, amd64)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !plan.Entries[0].Fallback {
 		t.Error("entry not marked as resolved through the fallback")
+	}
+	if _, err := src.Resolve(t.Context(), base.ref, amd64); err == nil {
+		t.Error("PlanPull wrote the fallback image into the store")
+	}
+	if err := cs.Pull(t.Context(), plan, src, nil); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := st.Image(base.ref.String()); err != nil {
 		t.Errorf("image not imported: %v", err)
@@ -404,13 +416,18 @@ func TestPull_fallback(t *testing.T) {
 	}
 
 	missing := cstorage.New(newVFS(t), newCache(t), nil)
-	if _, err := missing.PlanPull(
+	_, err = missing.PlanPull(
 		t.Context(),
 		src,
 		types.ImageSetManifest{Images: []string{"example.com/none:1"}},
 		amd64,
-	); err == nil {
-		t.Error("PlanPull of an absent entry without fallback: want error")
+	)
+	entryErr, ok := errors.AsType[*transfer.EntryError](err)
+	if !ok || entryErr.Ref.String() != "example.com/none:1" || entryErr.Platform != amd64 {
+		t.Errorf(
+			"PlanPull of an absent entry without fallback: got %v, want an EntryError for it",
+			err,
+		)
 	}
 }
 
@@ -549,6 +566,69 @@ func TestPush(t *testing.T) {
 			t.Errorf("local layer is %s, want zstd", m.Layers[2].MediaType)
 		}
 	})
+
+	t.Run("compression level defaults to best", func(t *testing.T) {
+		for _, tc := range []struct {
+			opt   *cstorage.Options
+			level zstd.EncoderLevel
+		}{
+			{nil, zstd.SpeedBestCompression},
+			{&cstorage.Options{CompressionLevel: zstd.SpeedFastest}, zstd.SpeedFastest},
+		} {
+			st := newVFS(t)
+			copyIn(t, st, base)
+			img, dst := pushFrom(t, cstorage.New(st, newCache(t), tc.opt), base.ref)
+			l := manifestOf(t, dst, img).Layers[0]
+			got := readStoreBlob(t, dst, l.Digest)
+			if want := zstdAt(t, unzstd(t, got), tc.level); !bytes.Equal(got, want) {
+				t.Errorf("layer is not zstd at level %s", tc.level)
+			}
+		}
+	})
+}
+
+func readStoreBlob(t *testing.T, s *store.Store, d digest.Digest) []byte {
+	t.Helper()
+	r, err := s.Blob(t.Context(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	b, err := io.ReadAll(io.NewSectionReader(r, 0, r.Size()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func unzstd(t *testing.T, b []byte) []byte {
+	t.Helper()
+	dec, err := zstd.NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dec.Close()
+	out, err := io.ReadAll(dec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func zstdAt(t *testing.T, b []byte, level zstd.EncoderLevel) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	enc, err := zstd.NewWriter(&buf, zstd.WithEncoderLevel(level))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enc.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 // TestIndexPin_roundTrip pulls an index-pin alias leaf and pushes it back out under the same pin.
